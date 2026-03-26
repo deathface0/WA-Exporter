@@ -2,11 +2,10 @@ if (!window.waExporterInjected) {
     window.waExporterInjected = true;
 
     const SELECTORS = {
-        scrollContainer: '[data-scrolltracepolicy="wa.web.conversation.messages"], #main .copyable-area',
-        messageRow: 'div[role="row"]',
+        scrollContainer: '#main [data-scrolltracepolicy="wa.web.conversation.messages"], #main .copyable-area',
+        messageRow: '#main div[role="row"]',
         messageText: '[data-testid="selectable-text"], span.selectable-text, span.copyable-text',
-        quotedContainer: 'div[aria-label="Quoted message"]',
-        quotedMention: '.quoted-mention',
+        quotedText: '.quoted-mention',
         metadata: '[data-pre-plain-text]'
     };
 
@@ -34,6 +33,8 @@ if (!window.waExporterInjected) {
     }
 
     async function runExtraction(startTime, endTime) {
+        console.log(`[WA-Exporter] Starting extraction. Target window: ${new Date(startTime).toLocaleString()} to ${new Date(endTime).toLocaleString()}`);
+        
         let scrollContainer = document.querySelector(SELECTORS.scrollContainer);
 
         if (!scrollContainer || scrollContainer.scrollHeight <= scrollContainer.clientHeight) {
@@ -52,120 +53,125 @@ if (!window.waExporterInjected) {
         }
 
         if (!scrollContainer) {
+            console.error("[WA-Exporter] Could not find the scroll container! The script cannot scroll.");
+            alert("WA-Exporter Error: Scroll container not found.");
             return [];
+        } else {
+            console.log("[WA-Exporter] Scroll container found:", scrollContainer);
         }
 
         let fetching = true;
-        let lastOldestTime = null;
+        let lastSignature = null;
         let stagnateCount = 0;
+        let scrollIterations = 0;
+        const extractedMessagesMap = new Map();
 
         while (fetching) {
-            scrollContainer.scrollBy(0, -1500);
-            await new Promise(resolve => setTimeout(resolve, 800));
+            scrollIterations++;
+            console.log(`[WA-Exporter] --- Scroll Iteration ${scrollIterations} ---`);
+            const currentNodes = document.querySelectorAll(SELECTORS.messageRow);
+            console.log(`[WA-Exporter] Found ${currentNodes.length} message nodes in DOM.`);
 
-            const messageNodes = document.querySelectorAll(SELECTORS.messageRow);
-            if (messageNodes.length > 0) {
-                const oldestNode = messageNodes[0];
-                const oldestTimeString = extractTimestampString(oldestNode);
-                const oldestTime = parseWhatsAppTime(oldestTimeString);
+            currentNodes.forEach(node => {
+                const timeString = extractTimestampString(node);
+                const messageTime = parseWhatsAppTime(timeString);
+
+                if (messageTime > 0 && messageTime >= startTime && messageTime <= endTime) {
+                    const allTextElements = Array.from(node.querySelectorAll(SELECTORS.messageText));
+                    const validTextElements = allTextElements.filter(el => !el.classList.contains('quoted-mention') && !el.closest('.quoted-mention'));
+                    const quotedElement = node.querySelector(SELECTORS.quotedText);
+
+                    let quotedText = "";
+                    if (quotedElement) {
+                        quotedText = extractTextWithEmojis(quotedElement);
+                    }
+
+                    let messageText = "";
+                    if (validTextElements.length > 0) {
+                        messageText = extractTextWithEmojis(validTextElements[0]);
+                    }
+
+                    if (messageText || timeString) {
+                        let rawFormat = timeString || `[${new Date(messageTime).toISOString()}] `;
+
+                        if (quotedText) {
+                            rawFormat += `[Respondiendo a: "${quotedText}"] `;
+                        }
+                        rawFormat += messageText;
+
+                        const uniqueKey = `${messageTime}-${rawFormat.substring(0, 50)}`; // Unique enough signature
+                        if (!extractedMessagesMap.has(uniqueKey)) {
+                            extractedMessagesMap.set(uniqueKey, {
+                                timestamp: messageTime,
+                                rawFormat: rawFormat.trim()
+                            });
+                        }
+                    }
+                }
+            });
+
+            if (currentNodes.length > 0) {
+                let oldestTime = 0;
+                let oldestSignature = "";
+                let oldestActualNode = null;
+                
+                for (const node of currentNodes) {
+                    const ts = parseWhatsAppTime(extractTimestampString(node));
+                    if (ts > 0) {
+                        oldestTime = ts;
+                        oldestSignature = ts.toString() + node.textContent.substring(0, 30);
+                        oldestActualNode = node;
+                        break;
+                    }
+                }
+
+                console.log(`[WA-Exporter] Oldest message time in DOM: ${new Date(oldestTime).toLocaleString()}`);
 
                 if (oldestTime > 0 && oldestTime <= startTime) {
-                    fetching = false;
+                    console.log(`[WA-Exporter] Reached or surpassed start time! Stopping fetch.`);
+                    fetching = false; 
+                    break;
                 }
 
-                if (oldestTime === lastOldestTime) {
+                if (oldestSignature === lastSignature && oldestSignature !== "") {
                     stagnateCount++;
-                    if (stagnateCount > 3) fetching = false;
+                    console.log(`[WA-Exporter] Stagnation detected (${stagnateCount}/4). Oldest msg hasn't changed.`);
+                    if (stagnateCount > 4) {
+                        console.log(`[WA-Exporter] Aborting: Hit top of chat. No new messages loading.`);
+                        fetching = false; 
+                        break;
+                    }
                 } else {
                     stagnateCount = 0;
-                    lastOldestTime = oldestTime;
+                    lastSignature = oldestSignature;
+                }
+
+                if (fetching) {
+                    console.log(`[WA-Exporter] Executing scroll...`);
+                    
+                    if (oldestActualNode) {
+                        oldestActualNode.scrollIntoView({ behavior: 'instant', block: 'start' });
+                    }
+                    
+                    scrollContainer.scrollBy(0, -1500);
+                    scrollContainer.scrollTop -= 2000;
+                    if (scrollContainer.scrollTop <= 100) {
+                        scrollContainer.scrollTop = 0;
+                    }
+                    
+                    scrollContainer.dispatchEvent(new WheelEvent('wheel', { deltaY: -2000, bubbles: true }));
+                    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+
+                    await new Promise(resolve => setTimeout(resolve, 500));
                 }
             } else {
-                fetching = false;
+                console.log(`[WA-Exporter] No messages found in DOM! Aborting.`);
+                fetching = false; 
             }
         }
 
-        const allMessageNodes = document.querySelectorAll(SELECTORS.messageRow);
-        const extractedData = [];
-
-        allMessageNodes.forEach(node => {
-            const timeString = extractTimestampString(node);
-            const messageTime = parseWhatsAppTime(timeString);
-
-            const allTextElements = Array.from(node.querySelectorAll(SELECTORS.messageText));
-            const validTextElements = allTextElements.filter(el => !el.classList.contains('quoted-mention') && !el.closest('.quoted-mention'));
-
-            const quotedContainer = node.querySelector(SELECTORS.quotedContainer);
-            let quotedAuthor = "";
-            let quotedText = "";
-
-            if (quotedContainer) {
-                const textEl = quotedContainer.querySelector(SELECTORS.quotedMention);
-                const authorEl = Array.from(quotedContainer.querySelectorAll('span[dir="auto"]')).find(el => el !== textEl);
-
-                if (authorEl) quotedAuthor = authorEl.textContent;
-                if (textEl) quotedText = extractTextWithEmojis(textEl);
-            } else {
-                const fallbackQuotedText = node.querySelector(SELECTORS.quotedMention);
-                if (fallbackQuotedText) {
-                    quotedText = extractTextWithEmojis(fallbackQuotedText);
-                    quotedAuthor = "Unknown";
-                }
-            }
-
-            let messageText = "";
-            let mediaInfo = "";
-            const isDeleted = node.querySelector('[data-icon="recalled"]');
-
-            if (isDeleted) {
-                messageText = "[Deleted Message]";
-            } else {
-                if (validTextElements.length > 0) {
-                    messageText = extractTextWithEmojis(validTextElements[0]);
-                }
-
-                if (node.querySelector('audio') || node.querySelector('[data-testid="audio-play"]') || node.querySelector('[data-icon="audio-play"]')) {
-                    mediaInfo = '[Audio/Voice Message]';
-                } else if (node.querySelector('video') || node.querySelector('[data-testid="video-play"]') || node.querySelector('[data-icon="video-play"]')) {
-                    mediaInfo = '[Video]';
-                } else if (node.querySelector('[data-testid="gif-symbol"]') || node.querySelector('[data-icon="gif"]')) {
-                    mediaInfo = '[GIF]';
-                } else if (node.querySelector('a[download]') || node.querySelector('[data-testid="document"]') || node.querySelector('[data-icon="document"]')) {
-                    let docName = "";
-                    const docTitles = node.querySelectorAll('span[dir="ltr"], span[title]');
-                    for (let el of docTitles) {
-                        if (el.textContent.match(/\.[a-zA-Z0-9]{2,4}$/)) {
-                            docName = ": " + el.textContent;
-                            break;
-                        }
-                    }
-                    mediaInfo = `[Document${docName}]`;
-                } else if (node.querySelector('img[src^="blob:"]') || node.querySelector('img[src^="mediasticker:"]')) {
-                    mediaInfo = '[Image/Sticker]';
-                }
-            }
-
-            if ((messageText || mediaInfo) && messageTime >= startTime && messageTime <= endTime) {
-                let rawFormat = timeString || `[${new Date(messageTime).toISOString()}] `;
-
-                if (quotedText && !isDeleted) {
-                    rawFormat += `[Replying to ${quotedAuthor}: "${quotedText}"] `;
-                }
-
-                if (mediaInfo) {
-                    rawFormat += `${mediaInfo} `;
-                }
-
-                rawFormat += messageText;
-
-                extractedData.push({
-                    timestamp: messageTime,
-                    rawFormat: rawFormat.trim()
-                });
-            }
-        });
-
-        return extractedData;
+        console.log(`[WA-Exporter] Extraction finished! Gathered ${extractedMessagesMap.size} valid messages.`);
+        return Array.from(extractedMessagesMap.values()).sort((a, b) => a.timestamp - b.timestamp);
     }
 
     function extractTimestampString(node) {
@@ -190,10 +196,15 @@ if (!window.waExporterInjected) {
             if (parts.length === 2) {
                 const timePart = parts[0];
                 const datePart = parts[1];
-                const dateParts = datePart.split(/[\/\-]/);
-                if (dateParts.length === 3) {
-                    const swappedDate = `${dateParts[1]}/${dateParts[0]}/${dateParts[2]} ${timePart}`;
-                    parsedDate = new Date(swappedDate);
+
+                parsedDate = new Date(`${datePart} ${timePart}`);
+
+                if (isNaN(parsedDate.getTime())) {
+                    const dateParts = datePart.split(/[\/\-]/);
+                    if (dateParts.length === 3) {
+                        const swappedDate = `${dateParts[1]}/${dateParts[0]}/${dateParts[2]} ${timePart}`;
+                        parsedDate = new Date(swappedDate);
+                    }
                 }
             }
         }
