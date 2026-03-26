@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {
+            width: 350px;
+            padding: 15px;
+            font-family: sans-serif;
+        }
+
+        .input-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        input {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background: #34B7F1;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <h3>Chat Exporter</h3>
+
+    <div class="input-group">
+        <label>Start Timestamp:</label>
+        <input type="datetime-local" id="startTime">
+    </div>
+
+    <div class="input-group">
+        <label>End Timestamp:</label>
+        <input type="datetime-local" id="endTime">
+    </div>
+
+    <button id="copyBtn">Copy Text</button>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
