@@ -1,8 +1,7 @@
 if (!window.waExporterInjected) {
     window.waExporterInjected = true;
 
-    /* ── Selectors (single source of truth for DOM queries) ── */
-    const SEL = {
+    const SELECTORS = {
         scrollContainer: '#main [data-scrolltracepolicy="wa.web.conversation.messages"], #main .copyable-area',
         messageRow: '#main div[role="row"]',
         messageText: '[data-testid="selectable-text"], span.selectable-text, span.copyable-text, ._akbw, ._ah6t',
@@ -10,41 +9,273 @@ if (!window.waExporterInjected) {
         metadata: '[data-pre-plain-text]'
     };
 
-    /* ── Constants ── */
-    const SCROLL_DELAY_MS = 500;
-    const SCROLL_JUMP_PX = 2000;
-    const STAGNATION_LIMIT = 5;
-
-    /* ── Message Listener ── */
-    browser.runtime.onMessage.addListener((request, _sender, sendResponse) => {
-        if (request.action === 'extract_chat') {
+    browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request.action === "extract_chat") {
             runExtraction(request.start, request.end).then(data => sendResponse({ data }));
             return true;
         }
     });
 
-    /* ── Text Extraction ── */
-
     function extractTextWithEmojis(element) {
-        let text = '';
-        for (const child of element.childNodes) {
+        let text = "";
+        for (let child of element.childNodes) {
             if (child.nodeType === Node.TEXT_NODE) {
                 text += child.textContent;
             } else if (child.nodeType === Node.ELEMENT_NODE) {
-                if (child.getAttribute('aria-hidden') === 'true') continue;
-                text += child.tagName === 'IMG' && child.alt
-                    ? child.alt
-                    : extractTextWithEmojis(child);
+                if (child.getAttribute('aria-hidden') === 'true') {
+                    continue;
+                }
+                if (child.tagName === 'IMG' && child.alt) {
+                    text += child.alt;
+                } else {
+                    text += extractTextWithEmojis(child);
+                }
             }
         }
-        return text.trim() ? text : (element.textContent || '').replace(/\s+/g, ' ').trim();
+
+        if (!text.trim() && element.textContent) {
+            text = element.textContent.replace(/\s+/g, ' ').trim();
+        }
+
+        return text;
     }
 
-    /* ── Timestamp Helpers ── */
+    function getFallbackTime(node) {
+        const spans = Array.from(node.querySelectorAll('span')).reverse();
+        for (let span of spans) {
+            const text = span.textContent || span.innerText;
+            if (text && /^\d{1,2}:\d{2}(?:\s*(?:AM|PM|am|pm|a\.?\s*m\.|p\.?\s*m\.))?$/.test(text.trim())) {
+                return text.trim();
+            }
+        }
+        return null;
+    }
+
+    function getClosestValidDateStr(nodes, index) {
+        for (let i = index; i < nodes.length; i++) {
+            let meta = nodes[i].querySelector(SELECTORS.metadata);
+            if (meta) {
+                let match = meta.getAttribute('data-pre-plain-text').match(/\[(.*?)\]/);
+                if (match && match[1].includes(',')) {
+                    let parts = match[1].split(',');
+                    return parts[0].includes(':') ? parts[1].trim() : parts[0].trim();
+                }
+            }
+        }
+        for (let i = index - 1; i >= 0; i--) {
+            let meta = nodes[i].querySelector(SELECTORS.metadata);
+            if (meta) {
+                let match = meta.getAttribute('data-pre-plain-text').match(/\[(.*?)\]/);
+                if (match && match[1].includes(',')) {
+                    let parts = match[1].split(',');
+                    return parts[0].includes(':') ? parts[1].trim() : parts[0].trim();
+                }
+            }
+        }
+        return new Date().toLocaleDateString('en-US');
+    }
+
+    async function runExtraction(startTime, endTime) {
+        console.log(`[WA-Exporter] Starting extraction. Target window: ${new Date(startTime).toLocaleString()} to ${new Date(endTime).toLocaleString()}`);
+
+        let scrollContainer = document.querySelector(SELECTORS.scrollContainer);
+
+        if (!scrollContainer || scrollContainer.scrollHeight <= scrollContainer.clientHeight) {
+            const row = document.querySelector(SELECTORS.messageRow);
+            if (row) {
+                let el = row.parentElement;
+                while (el && el !== document.body) {
+                    const style = window.getComputedStyle(el);
+                    if (el.scrollHeight > el.clientHeight && (style.overflowY === 'auto' || style.overflowY === 'scroll')) {
+                        scrollContainer = el;
+                        break;
+                    }
+                    el = el.parentElement;
+                }
+            }
+        }
+
+        if (!scrollContainer) {
+            console.error("[WA-Exporter] Could not find the scroll container! The script cannot scroll.");
+            alert("WA-Exporter Error: Scroll container not found.");
+            return [];
+        }
+
+        let fetching = true;
+        let lastSignature = null;
+        let stagnateCount = 0;
+        let scrollIterations = 0;
+        const extractedMessagesMap = new Map();
+
+        while (fetching) {
+            scrollIterations++;
+            console.log(`[WA-Exporter] --- Scroll Iteration ${scrollIterations} ---`);
+            const nodesArray = Array.from(document.querySelectorAll(SELECTORS.messageRow));
+
+            nodesArray.forEach((node, index) => {
+                let timeString = extractTimestampString(node);
+                let messageTime = parseWhatsAppTime(timeString);
+
+                if (messageTime === 0) {
+                    const fallbackTimeString = getFallbackTime(node);
+                    if (fallbackTimeString) {
+                        let sender = "Desconocido";
+                        if (node.querySelector('.message-out')) sender = "Yo";
+                        else if (node.querySelector('.message-in')) sender = "Contacto";
+
+                        let dateStr = getClosestValidDateStr(nodesArray, index);
+                        timeString = `[${fallbackTimeString}, ${dateStr}] ${sender}: `;
+                        messageTime = parseWhatsAppTime(timeString);
+                    }
+                }
+
+                if (messageTime > 0 && messageTime >= startTime && messageTime <= endTime) {
+                    const allTextElements = Array.from(node.querySelectorAll(SELECTORS.messageText));
+                    const validTextElements = allTextElements.filter(el => !el.classList.contains('quoted-mention') && !el.closest('.quoted-mention'));
+                    const quotedElement = node.querySelector(SELECTORS.quotedText);
+
+                    let quotedText = "";
+                    if (quotedElement) {
+                        quotedText = extractTextWithEmojis(quotedElement);
+                        if (!quotedText.trim()) {
+                            const qHtml = quotedElement.innerHTML;
+                            if (qHtml.includes('data-icon="image"') || qHtml.includes('<img')) quotedText = "Imagen/Sticker";
+                            else if (qHtml.includes('data-icon="video"')) quotedText = "Video";
+                            else if (qHtml.includes('data-icon="audio"') || qHtml.includes('Voice message') || qHtml.includes('ptt-status')) quotedText = "Audio / Nota de voz";
+                            else if (qHtml.includes('data-icon="gif"')) quotedText = "GIF";
+                            else quotedText = "Multimedia";
+                        }
+                    }
+
+                    let messageText = "";
+                    if (validTextElements.length > 0) {
+                        messageText = extractTextWithEmojis(validTextElements[0]);
+                    }
+
+                    const nodeHtml = node.innerHTML;
+
+                    if (!messageText.trim() || nodeHtml.includes('data-icon="recalled"')) {
+                        if (nodeHtml.includes('data-icon="recalled"')) {
+                            messageText = "Mensaje eliminado";
+                        } else if (nodeHtml.includes('alt="Sticker"') || nodeHtml.includes('alt="sticker"')) {
+                            messageText = "[Sticker]";
+                        } else if (nodeHtml.includes('aria-label="Voice message"') || nodeHtml.includes('aria-label="Play voice message"') || nodeHtml.includes('data-icon="ptt-status"')) {
+                            messageText = "[Audio]";
+                        } else if (nodeHtml.includes('data-icon="video"') || node.querySelector('video')) {
+                            messageText = "[Video]";
+                        } else if (nodeHtml.includes('data-icon="gif"')) {
+                            messageText = "[GIF]";
+                        } else if (nodeHtml.includes('blob:') || nodeHtml.includes('data:image')) {
+                            messageText = "[Imagen]";
+                        } else if (nodeHtml.includes('data-icon="document"')) {
+                            messageText = "[Archivo]";
+                        } else if (nodeHtml.includes('data-icon="contact"')) {
+                            messageText = "[Contacto]";
+                        } else if (nodeHtml.includes('data-icon="location"')) {
+                            messageText = "[Ubicación]";
+                        } else {
+                            messageText = messageText.trim() ? "Mensaje eliminado" : "[Contenido Multimedia]";
+                        }
+                    }
+
+                    if (messageText || timeString) {
+                        let rawFormat = timeString || `[${new Date(messageTime).toISOString()}] `;
+
+                        if (quotedText) {
+                            rawFormat += `[Respondiendo a: "${quotedText}"] `;
+                        }
+
+                        rawFormat += messageText;
+
+                        let uniqueKey;
+                        const msgNodeWithId = node.querySelector('[data-id]');
+                        if (msgNodeWithId) {
+                            uniqueKey = msgNodeWithId.getAttribute('data-id');
+                        } else {
+                            uniqueKey = `${messageTime}-${rawFormat.substring(0, 50)}`;
+                        }
+
+                        if (!extractedMessagesMap.has(uniqueKey)) {
+                            extractedMessagesMap.set(uniqueKey, {
+                                timestamp: messageTime,
+                                rawFormat: rawFormat.trim()
+                            });
+                        }
+                    }
+                }
+            });
+
+            if (nodesArray.length > 0) {
+                let oldestTime = 0;
+                let oldestSignature = "";
+                let oldestActualNode = null;
+
+                for (let i = 0; i < nodesArray.length; i++) {
+                    const node = nodesArray[i];
+                    let ts = parseWhatsAppTime(extractTimestampString(node));
+
+                    if (ts === 0) {
+                        const fallbackTs = getFallbackTime(node);
+                        if (fallbackTs) {
+                            let dateStr = getClosestValidDateStr(nodesArray, i);
+                            ts = parseWhatsAppTime(`[${fallbackTs}, ${dateStr}] Unknown: `);
+                        }
+                    }
+
+                    if (ts > 0) {
+                        oldestTime = ts;
+                        oldestSignature = ts.toString() + node.textContent.substring(0, 30);
+                        oldestActualNode = node;
+                        break;
+                    }
+                }
+
+                if (oldestTime > 0 && oldestTime <= startTime) {
+                    fetching = false;
+                    break;
+                }
+
+                if (oldestSignature === lastSignature && oldestSignature !== "") {
+                    stagnateCount++;
+                    if (stagnateCount > 4) {
+                        fetching = false;
+                        break;
+                    }
+                } else {
+                    stagnateCount = 0;
+                    lastSignature = oldestSignature;
+                }
+
+                if (fetching) {
+                    if (oldestActualNode) {
+                        oldestActualNode.scrollIntoView({ behavior: 'instant', block: 'start' });
+                    }
+
+                    scrollContainer.scrollBy(0, -1500);
+                    scrollContainer.scrollTop -= 2000;
+                    if (scrollContainer.scrollTop <= 100) {
+                        scrollContainer.scrollTop = 0;
+                    }
+
+                    scrollContainer.dispatchEvent(new WheelEvent('wheel', { deltaY: -2000, bubbles: true }));
+                    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+            } else {
+                fetching = false;
+            }
+        }
+
+        return Array.from(extractedMessagesMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+    }
 
     function extractTimestampString(node) {
-        const meta = node.querySelector(SEL.metadata);
-        return meta ? meta.getAttribute('data-pre-plain-text') : null;
+        const metadataNode = node.querySelector(SELECTORS.metadata);
+        if (metadataNode) {
+            return metadataNode.getAttribute('data-pre-plain-text');
+        }
+        return null;
     }
 
     function parseWhatsAppTime(timeStr) {
@@ -53,218 +284,29 @@ if (!window.waExporterInjected) {
         const match = timeStr.match(/\[(.*?)\]/);
         if (!match) return 0;
 
-        const cleaned = match[1].trim().replace(/[\u200E\u200F\u202A-\u202E]/g, '');
-        let date = new Date(cleaned);
+        let cleanedStr = match[1].trim();
+        cleanedStr = cleanedStr.replace(/[\u200E\u200F\u202A-\u202E]/g, '');
 
-        if (isNaN(date.getTime())) {
-            const parts = cleaned.split(',');
+        let parsedDate = new Date(cleanedStr);
+
+        if (isNaN(parsedDate.getTime())) {
+            const parts = cleanedStr.split(',');
             if (parts.length >= 2) {
-                const timePart = parts[0].includes(':') ? parts[0].trim() : parts[1].trim();
-                const datePart = parts[0].includes(':') ? parts[1].trim() : parts[0].trim();
+                let timePart = parts[0].includes(':') ? parts[0].trim() : parts[1].trim();
+                let datePart = parts[0].includes(':') ? parts[1].trim() : parts[0].trim();
 
-                date = new Date(`${datePart} ${timePart}`);
+                parsedDate = new Date(`${datePart} ${timePart}`);
 
-                if (isNaN(date.getTime())) {
-                    const dp = datePart.split(/[\/\-]/);
-                    if (dp.length === 3) {
-                        date = new Date(`${dp[1]}/${dp[0]}/${dp[2]} ${timePart}`);
+                if (isNaN(parsedDate.getTime())) {
+                    const dateParts = datePart.split(/[\/\-]/);
+                    if (dateParts.length === 3) {
+                        const swappedDate = `${dateParts[1]}/${dateParts[0]}/${dateParts[2]} ${timePart}`;
+                        parsedDate = new Date(swappedDate);
                     }
                 }
             }
         }
 
-        return isNaN(date.getTime()) ? 0 : date.getTime();
-    }
-
-    /**
-     * Scans neighbouring nodes to find a valid date string when the current
-     * node only has a bare time (e.g. "12:34") without an associated date.
-     */
-    function getFallbackTime(node) {
-        for (const el of node.querySelectorAll('span, div')) {
-            const t = (el.textContent || '').trim();
-            if (/^\d{1,2}:\d{2}(?:\s*(?:AM|PM|am|pm|a\.?\s*m\.|p\.?\s*m\.))?$/.test(t)) return t;
-        }
-        return null;
-    }
-
-    function getClosestDateString(nodes, index) {
-        const extract = (meta) => {
-            const m = meta.getAttribute('data-pre-plain-text').match(/\[(.*?)\]/);
-            if (m && m[1].includes(',')) {
-                const parts = m[1].split(',');
-                return parts[0].includes(':') ? parts[1].trim() : parts[0].trim();
-            }
-            return null;
-        };
-
-        for (let i = index; i < nodes.length; i++) {
-            const meta = nodes[i].querySelector(SEL.metadata);
-            if (meta) { const d = extract(meta); if (d) return d; }
-        }
-        for (let i = index - 1; i >= 0; i--) {
-            const meta = nodes[i].querySelector(SEL.metadata);
-            if (meta) { const d = extract(meta); if (d) return d; }
-        }
-        return new Date().toLocaleDateString('en-US');
-    }
-
-    /* ── Scroll Container Detection ── */
-
-    function findScrollContainer() {
-        let container = document.querySelector(SEL.scrollContainer);
-
-        if (!container || container.scrollHeight <= container.clientHeight) {
-            const row = document.querySelector(SEL.messageRow);
-            if (row) {
-                let el = row.parentElement;
-                while (el && el !== document.body) {
-                    const style = window.getComputedStyle(el);
-                    if (el.scrollHeight > el.clientHeight && ['auto', 'scroll'].includes(style.overflowY)) {
-                        container = el;
-                        break;
-                    }
-                    el = el.parentElement;
-                }
-            }
-        }
-
-        return container;
-    }
-
-    /* ── Media / Deleted Message Detection ── */
-
-    function classifyMediaContent(node) {
-        const iconCheck = (keyword) => node.querySelector(`span[data-icon*="${keyword}"]`);
-
-        if (iconCheck('recalled')) return '[Mensaje eliminado]';
-        if (node.querySelector('img[alt*="Sticker"], img[alt*="sticker"]')) return '[Sticker]';
-        if (iconCheck('audio') || node.querySelector('audio')) return '[Audio / Nota de voz]';
-        if (iconCheck('video') || node.querySelector('video')) return '[Video]';
-        if (iconCheck('gif')) return '[GIF]';
-        if (node.querySelector('img[src^="blob:"], img[src^="data:image"]')) return '[Imagen]';
-        if (iconCheck('document')) return '[Archivo]';
-        if (iconCheck('contact')) return '[Contacto]';
-        if (iconCheck('location')) return '[Ubicación]';
-
-        return '[Contenido Multimedia]';
-    }
-
-    /* ── Node → Message Object ── */
-
-    function parseMessageNode(node, nodesArray, index) {
-        let timeString = extractTimestampString(node);
-        let messageTime = parseWhatsAppTime(timeString);
-
-        // Fallback for nodes without full metadata (only bare time visible)
-        if (messageTime === 0) {
-            const fallback = getFallbackTime(node);
-            if (fallback) {
-                const sender = node.querySelector('.message-out') ? 'Yo'
-                    : node.querySelector('.message-in') ? 'Contacto'
-                        : 'Desconocido';
-                const dateStr = getClosestDateString(nodesArray, index);
-                timeString = `[${fallback}, ${dateStr}] ${sender}: `;
-                messageTime = parseWhatsAppTime(timeString);
-            }
-        }
-
-        if (messageTime === 0) return null;
-
-        // Quoted text
-        const quotedEl = node.querySelector(SEL.quotedText);
-        let quotedText = '';
-        if (quotedEl) {
-            quotedText = extractTextWithEmojis(quotedEl);
-            if (!quotedText.trim()) {
-                if (quotedEl.querySelector('span[data-icon*="image"], img')) quotedText = 'Imagen/Sticker';
-                else if (quotedEl.querySelector('span[data-icon*="video"]')) quotedText = 'Video';
-                else if (quotedEl.querySelector('span[data-icon*="audio"]')) quotedText = 'Audio';
-                else if (quotedEl.querySelector('span[data-icon*="gif"]')) quotedText = 'GIF';
-                else quotedText = 'Multimedia';
-            }
-        }
-
-        // Message body
-        const textEls = Array.from(node.querySelectorAll(SEL.messageText));
-        const validEls = textEls.filter(el => !el.classList.contains('quoted-mention') && !el.closest('.quoted-mention'));
-        let msgText = validEls.length > 0 ? extractTextWithEmojis(validEls[0]) : '';
-
-        if (!msgText.trim() || node.querySelector('span[data-icon*="recalled"]')) {
-            msgText = classifyMediaContent(node);
-        }
-
-        return { timeString, messageTime, quotedText, msgText };
-    }
-
-    /* ── Main Extraction Loop ── */
-
-    async function runExtraction(startTime, endTime) {
-        const scrollContainer = findScrollContainer();
-        if (!scrollContainer) {
-            alert('WA-Exporter: No se encontró el contenedor de scroll.');
-            return [];
-        }
-
-        let lastSignature = null;
-        let stagnateCount = 0;
-        const messagesMap = new Map();
-
-        while (true) {
-            const nodesArray = Array.from(document.querySelectorAll(SEL.messageRow));
-
-            // Harvest visible messages
-            nodesArray.forEach((node, i) => {
-                const parsed = parseMessageNode(node, nodesArray, i);
-                if (!parsed || parsed.messageTime < startTime || parsed.messageTime > endTime) return;
-
-                let raw = parsed.timeString || `[${new Date(parsed.messageTime).toISOString()}] `;
-                if (parsed.quotedText) raw += `[Respondiendo a: "${parsed.quotedText}"] `;
-                raw += parsed.msgText;
-
-                const key = `${parsed.messageTime}-${raw.substring(0, 50)}`;
-                if (!messagesMap.has(key)) {
-                    messagesMap.set(key, { timestamp: parsed.messageTime, rawFormat: raw.trim() });
-                }
-            });
-
-            // Find the oldest real timestamp in the current DOM
-            let oldestTime = 0, oldestSig = '', oldestNode = null;
-            for (let i = 0; i < nodesArray.length; i++) {
-                let ts = parseWhatsAppTime(extractTimestampString(nodesArray[i]));
-                if (ts === 0) {
-                    const fb = getFallbackTime(nodesArray[i]);
-                    if (fb) ts = parseWhatsAppTime(`[${fb}, ${getClosestDateString(nodesArray, i)}] x: `);
-                }
-                if (ts > 0) {
-                    oldestTime = ts;
-                    oldestSig = ts + nodesArray[i].textContent.substring(0, 30);
-                    oldestNode = nodesArray[i];
-                    break;
-                }
-            }
-
-            // Stop conditions
-            if (nodesArray.length === 0) break;
-            if (oldestTime > 0 && oldestTime <= startTime) break;
-
-            if (oldestSig === lastSignature && oldestSig !== '') {
-                if (++stagnateCount > STAGNATION_LIMIT) break;
-            } else {
-                stagnateCount = 0;
-                lastSignature = oldestSig;
-            }
-
-            // Scroll up aggressively
-            if (oldestNode) oldestNode.scrollIntoView({ behavior: 'instant', block: 'start' });
-            scrollContainer.scrollBy(0, -1500);
-            scrollContainer.scrollTop = Math.max(scrollContainer.scrollTop - SCROLL_JUMP_PX, 0);
-            scrollContainer.dispatchEvent(new WheelEvent('wheel', { deltaY: -SCROLL_JUMP_PX, bubbles: true }));
-            scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
-
-            await new Promise(r => setTimeout(r, SCROLL_DELAY_MS));
-        }
-
-        return Array.from(messagesMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+        return isNaN(parsedDate.getTime()) ? 0 : parsedDate.getTime();
     }
 }
