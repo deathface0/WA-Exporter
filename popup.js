@@ -1,63 +1,55 @@
-document.addEventListener('DOMContentLoaded', () => {
-    const startInput = document.getElementById('startTime');
-    const endInput = document.getElementById('endTime');
-    
-    if (startInput && endInput) {
-        const now = new Date();
-        const yesterday = new Date(now.getTime() - (24 * 60 * 60 * 1000));
-        
-        const formatLocal = (date) => {
-            const pad = (n) => n.toString().padStart(2, '0');
-            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-        };
+/* ── Helpers ── */
 
-        startInput.value = formatLocal(yesterday);
-        endInput.value = formatLocal(now);
-    }
+const $ = (id) => document.getElementById(id);
+const pad = (n) => n.toString().padStart(2, '0');
+
+function formatLocalDatetime(date) {
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/* ── Default Date Range (now − 24h → now) ── */
+
+document.addEventListener('DOMContentLoaded', () => {
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 86_400_000);
+
+    $('startTime').value = formatLocalDatetime(yesterday);
+    $('endTime').value   = formatLocalDatetime(now);
 });
 
+/* ── Tab & Extraction ── */
+
 async function getActiveTab() {
-    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-    return tabs[0];
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    return tab;
 }
 
 async function executeExtraction() {
-    const startInput = document.getElementById('startTime').value;
-    const endInput = document.getElementById('endTime').value;
+    const startVal = $('startTime').value;
+    const endVal   = $('endTime').value;
 
-    if (!startInput || !endInput) {
-        alert("Missing timestamps.");
-        return null;
-    }
+    if (!startVal || !endVal) { alert('Missing timestamps.'); return null; }
 
-    const startTime = new Date(startInput).getTime();
-    const endTime = new Date(endInput).getTime();
+    const startTime = new Date(startVal).getTime();
+    const endTime   = new Date(endVal).getTime();
 
-    if (startTime > endTime) {
-        alert("Start timestamp must be before end timestamp.");
-        return null;
-    }
+    if (startTime > endTime) { alert('Start must be before end.'); return null; }
 
-    const activeTab = await getActiveTab();
+    const tab = await getActiveTab();
+    if (!tab?.url?.includes('web.whatsapp.com')) { alert('Navigate to WhatsApp Web.'); return null; }
 
-    if (!activeTab || !activeTab.url.includes("web.whatsapp.com")) {
-        alert("Navigate to WhatsApp Web.");
-        return null;
-    }
+    await browser.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
 
-    await browser.scripting.executeScript({
-        target: { tabId: activeTab.id },
-        files: ['content.js']
+    const response = await browser.tabs.sendMessage(tab.id, {
+        action: 'extract_chat',
+        start:  startTime,
+        end:    endTime
     });
 
-    const response = await browser.tabs.sendMessage(activeTab.id, {
-        action: "extract_chat",
-        start: startTime,
-        end: endTime
-    });
-
-    return response ? response.data : null;
+    return response?.data ?? null;
 }
+
+/* ── Output Helpers ── */
 
 function formatData(data) {
     return data.map(d => d.rawFormat).join('\n');
@@ -66,45 +58,68 @@ function formatData(data) {
 async function copyToClipboard(text) {
     try {
         await navigator.clipboard.writeText(text);
-    } catch (err) {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        document.body.appendChild(textarea);
-        textarea.select();
+    } catch {
+        const ta = Object.assign(document.createElement('textarea'), { value: text });
+        document.body.appendChild(ta);
+        ta.select();
         document.execCommand('copy');
-        document.body.removeChild(textarea);
+        ta.remove();
     }
 }
 
-document.getElementById('copyBtn').addEventListener('click', async (e) => {
-    const btn = e.target;
-    const originalText = btn.innerText;
-    
-    btn.innerText = "Extracting...";
+function downloadTxt(filename, text) {
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+    const a = Object.assign(document.createElement('a'), { href: url, download: filename });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
+/* ── Action Handler ── */
+
+function setStatus(msg) {
+    const el = $('statusMsg');
+    if (el) el.textContent = msg;
+}
+
+async function handleAction(action, btn) {
+    const original = btn.textContent;
+    btn.textContent = 'Extracting...';
     btn.disabled = true;
+    setStatus('Fetching messages... Please wait.');
 
     try {
         const data = await executeExtraction();
-        if (!data || data.length === 0) {
-            btn.innerText = "No data found";
-            setTimeout(() => {
-                btn.innerText = originalText;
-                btn.disabled = false;
-            }, 3000);
+
+        if (!data?.length) {
+            btn.textContent = 'No data found';
+            setStatus('No messages found within this range.');
+            setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 3000);
             return;
         }
 
         const text = formatData(data);
-        await copyToClipboard(text);
-        
-        btn.innerText = "Copied to clipboard!";
+
+        if (action === 'copy') {
+            await copyToClipboard(text);
+            btn.textContent = 'Copied to clipboard!';
+        } else {
+            downloadTxt(`WA_Chat_Export_${Date.now()}.txt`, text);
+            btn.textContent = 'Downloaded!';
+        }
+
+        setStatus(`Successfully fetched ${data.length} message(s)!`);
     } catch (err) {
         console.error(err);
-        btn.innerText = "Error occurred";
+        btn.textContent = 'Error occurred';
+        setStatus('An error occurred during extraction.');
     }
 
-    setTimeout(() => {
-        btn.innerText = originalText;
-        btn.disabled = false;
-    }, 3000);
-});
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 3000);
+}
+
+/* ── Event Bindings ── */
+
+$('copyBtn').addEventListener('click',    (e) => handleAction('copy', e.target));
+$('downloadBtn').addEventListener('click', (e) => handleAction('download', e.target));

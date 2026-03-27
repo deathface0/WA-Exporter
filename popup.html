@@ -1,39 +1,72 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
     <meta charset="utf-8">
     <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
         body {
             width: 350px;
-            padding: 15px;
-            font-family: sans-serif;
+            padding: 16px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            color: #111;
+        }
+
+        h3 {
+            margin-bottom: 14px;
         }
 
         .input-group {
-            margin-bottom: 15px;
+            margin-bottom: 12px;
         }
 
         label {
             display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
+            margin-bottom: 4px;
+            font-weight: 600;
+            font-size: 13px;
         }
 
         input {
             width: 100%;
             padding: 8px;
-            box-sizing: border-box;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 4px;
         }
 
         button {
-            width: 100%;
+            flex: 1;
             padding: 10px;
-            background: #34B7F1;
-            color: white;
+            color: #fff;
             border: none;
+            border-radius: 4px;
             cursor: pointer;
-            font-weight: bold;
+            font-weight: 700;
+            font-size: 13px;
+            transition: opacity 0.15s;
+        }
+
+        button:hover { opacity: 0.85; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        #copyBtn     { background: #34B7F1; }
+        #downloadBtn { background: #25D366; }
+
+        #statusMsg {
+            text-align: center;
+            color: #555;
+            font-size: 13px;
+            font-weight: 600;
+            margin-top: 14px;
+            min-height: 18px;
         }
     </style>
 </head>
@@ -42,16 +75,21 @@
     <h3>Chat Exporter</h3>
 
     <div class="input-group">
-        <label>Start Timestamp:</label>
+        <label for="startTime">Start Timestamp</label>
         <input type="datetime-local" id="startTime">
     </div>
 
     <div class="input-group">
-        <label>End Timestamp:</label>
+        <label for="endTime">End Timestamp</label>
         <input type="datetime-local" id="endTime">
     </div>
 
-    <button id="copyBtn">Copy Text</button>
+    <div class="btn-group">
+        <button id="copyBtn">Copy Text</button>
+        <button id="downloadBtn">Download TXT</button>
+    </div>
+
+    <p id="statusMsg"></p>
 
     <script src="popup.js"></script>
 </body>
