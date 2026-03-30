@@ -204,9 +204,19 @@ if (!window.waExporterInjected) {
                                     quotedText = "[Imagen citada]";
                                 }
                             } else if (qHtml.includes('data-icon="audio') || qHtml.includes('ptt-status')) {
-                                quotedText = "[Audio citado]";
-                            } else if (qHtml.includes('data-icon="video')) {
-                                quotedText = "[Video citado]";
+                                const qBlobAudio = quotedElement.querySelector('audio[src^="blob:"]');
+                                if (qBlobAudio && qBlobAudio.hasAttribute('src')) {
+                                    quotedText = `[Audio citado: ${qBlobAudio.getAttribute('src')}]`;
+                                } else {
+                                    quotedText = "[Audio citado]";
+                                }
+                            } else if (qHtml.includes('data-icon="video') || quotedElement.querySelector('video')) {
+                                const qBlobVideo = quotedElement.querySelector('video[src^="blob:"]');
+                                if (qBlobVideo && qBlobVideo.hasAttribute('src')) {
+                                    quotedText = `[Video citado: ${qBlobVideo.getAttribute('src')}]`;
+                                } else {
+                                    quotedText = "[Video citado]";
+                                }
                             } else if (qHtml.includes('data-icon="document')) {
                                 quotedText = "[Archivo citado]";
                             }
@@ -248,15 +258,30 @@ if (!window.waExporterInjected) {
                         nodeHtml.includes('data-icon="audio-play"') ||
                         node.querySelector('button[aria-label="Play voice message"]')
                     ) {
-                        mediaTag = "[Audio]";
+                        const blobAudio = node.querySelector('audio[src^="blob:"]');
+                        if (blobAudio && blobAudio.hasAttribute('src')) {
+                            mediaTag = `[Audio: ${blobAudio.getAttribute('src')}]`;
+                        } else {
+                            mediaTag = "[Audio]";
+                        }
 
                         // GIF — WhatsApp renders GIFs as <video autoplay loop> or has data-icon="gif"
                     } else if (nodeHtml.includes('data-icon="gif') || nodeHtml.includes('data-gif-attribution')
                         || node.querySelector('video[autoplay][loop]')) {
-                        mediaTag = "[GIF]";
+                        const blobGif = node.querySelector('video[src^="blob:"]');
+                        if (blobGif && blobGif.hasAttribute('src')) {
+                            mediaTag = `[GIF: ${blobGif.getAttribute('src')}]`;
+                        } else {
+                            mediaTag = "[GIF]";
+                        }
 
                     } else if (nodeHtml.includes('data-icon="video"') || node.querySelector('video')) {
-                        mediaTag = "[Video]";
+                        const blobVideo = node.querySelector('video[src^="blob:"]');
+                        if (blobVideo && blobVideo.hasAttribute('src')) {
+                            mediaTag = `[Video: ${blobVideo.getAttribute('src')}]`;
+                        } else {
+                            mediaTag = "[Video]";
+                        }
 
                     } else if (nodeHtml.includes('data-icon="contact')) {
                         mediaTag = "[Contacto]";
