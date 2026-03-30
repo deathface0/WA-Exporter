@@ -220,6 +220,13 @@ if (!window.waExporterInjected) {
                                 } else {
                                     quotedText = "[Video citado]";
                                 }
+                            } else if (qHasIcon('location') || quotedElement.querySelector('a[href*="maps.google.com"], a[href*="goo.gl/maps"], a[href*="waze.com"], a[href*="maps.apple.com"], a[href*="foursquare.com"]')) {
+                                const qMapLink = quotedElement.querySelector('a[href*="maps.google.com"], a[href*="goo.gl/maps"], a[href*="waze.com"], a[href*="maps.apple.com"], a[href*="foursquare.com"]');
+                                if (qMapLink && qMapLink.hasAttribute('href')) {
+                                    quotedText = `[Ubicación citada: ${qMapLink.getAttribute('href')}]`;
+                                } else {
+                                    quotedText = "[Ubicación citada]";
+                                }
                             } else {
                                 const qFileTypeSpan = quotedElement.querySelector('span[data-meta-key="type"]');
                                 if (qFileTypeSpan || ['document', 'pdf', 'xls', 'ppt', 'txt', 'zip', 'ms-office'].some(qHasIcon)) {
@@ -302,8 +309,13 @@ if (!window.waExporterInjected) {
                     } else if (hasIcon('contact')) {
                         mediaTag = "[Contacto]";
 
-                    } else if (hasIcon('location')) {
-                        mediaTag = "[Ubicación]";
+                    } else if (hasIcon('location') || node.querySelector('a[href*="maps.google.com"], a[href*="goo.gl/maps"], a[href*="waze.com"], a[href*="maps.apple.com"], a[href*="foursquare.com"]')) {
+                        const mapLink = node.querySelector('a[href*="maps.google.com"], a[href*="goo.gl/maps"], a[href*="waze.com"], a[href*="maps.apple.com"], a[href*="foursquare.com"]');
+                        if (mapLink && mapLink.hasAttribute('href')) {
+                            mediaTag = `[Ubicación: ${mapLink.getAttribute('href')}]`;
+                        } else {
+                            mediaTag = "[Ubicación]";
+                        }
 
                     } else if (hasIcon('image') || node.querySelector('img[src^="blob:"], img[src^="data:image"]')) {
                         const blobImg = node.querySelector('img[src^="blob:"]');
