@@ -22,9 +22,7 @@ if (!window.waExporterInjected) {
             if (child.nodeType === Node.TEXT_NODE) {
                 text += child.textContent;
             } else if (child.nodeType === Node.ELEMENT_NODE) {
-                if (child.getAttribute('aria-hidden') === 'true') {
-                    continue;
-                }
+                if (child.getAttribute('aria-hidden') === 'true') continue;
                 if (child.tagName === 'IMG' && child.alt) {
                     text += child.alt;
                 } else {
@@ -32,18 +30,16 @@ if (!window.waExporterInjected) {
                 }
             }
         }
-
         if (!text.trim() && element.textContent) {
             text = element.textContent.replace(/\s+/g, ' ').trim();
         }
-
         return text;
     }
 
     function getFallbackTime(node) {
-        const spans = Array.from(node.querySelectorAll('span')).reverse();
-        for (let span of spans) {
-            const text = span.textContent || span.innerText;
+        const elements = Array.from(node.querySelectorAll('span, div')).reverse();
+        for (let el of elements) {
+            const text = el.textContent || el.innerText;
             if (text && /^\d{1,2}:\d{2}(?:\s*(?:AM|PM|am|pm|a\.?\s*m\.|p\.?\s*m\.))?$/.test(text.trim())) {
                 return text.trim();
             }
@@ -52,27 +48,86 @@ if (!window.waExporterInjected) {
     }
 
     function getClosestValidDateStr(nodes, index) {
-        for (let i = index; i < nodes.length; i++) {
-            let meta = nodes[i].querySelector(SELECTORS.metadata);
-            if (meta) {
-                let match = meta.getAttribute('data-pre-plain-text').match(/\[(.*?)\]/);
-                if (match && match[1].includes(',')) {
-                    let parts = match[1].split(',');
+        function extractDate(node) {
+            const meta = node.querySelector('[data-pre-plain-text]');
+            if (!meta) return null;
+            const raw = meta.getAttribute('data-pre-plain-text').replace(/[\u200E\u200F\u202A-\u202E]/g, '').trim();
+            // Bracket format: "[1:59 PM, 3/25/2026] Author: "
+            const bracketMatch = raw.match(/\[(.*?)\]/);
+            if (bracketMatch) {
+                const parts = bracketMatch[1].split(',');
+                if (parts.length >= 2) {
                     return parts[0].includes(':') ? parts[1].trim() : parts[0].trim();
                 }
             }
+            // Non-bracket: "1:59 PM, 3/25/2026 Author: "
+            const noBracket = raw.match(/^\d{1,2}:\d{2}(?:\s*[AP]M)?,\s*(.+?)\s+\w/i);
+            if (noBracket) return noBracket[1].trim();
+            return null;
+        }
+
+        for (let i = index; i < nodes.length; i++) {
+            const d = extractDate(nodes[i]);
+            if (d) return d;
         }
         for (let i = index - 1; i >= 0; i--) {
-            let meta = nodes[i].querySelector(SELECTORS.metadata);
-            if (meta) {
-                let match = meta.getAttribute('data-pre-plain-text').match(/\[(.*?)\]/);
-                if (match && match[1].includes(',')) {
-                    let parts = match[1].split(',');
-                    return parts[0].includes(':') ? parts[1].trim() : parts[0].trim();
-                }
-            }
+            const d = extractDate(nodes[i]);
+            if (d) return d;
         }
         return new Date().toLocaleDateString('en-US');
+    }
+
+    function extractTimestampString(node) {
+        const metadataNode = node.querySelector('[data-pre-plain-text]');
+        if (metadataNode) {
+            return metadataNode.getAttribute('data-pre-plain-text');
+        }
+        return null;
+    }
+
+    function parseWhatsAppTime(timeStr) {
+        if (!timeStr) return 0;
+
+        timeStr = timeStr.replace(/[\u200E\u200F\u202A-\u202E]/g, '');
+
+        // Bracket format: "[1:59 PM, 3/25/2026] Author: "
+        const bracketMatch = timeStr.match(/\[(.*?)\]/);
+        if (bracketMatch) {
+            let cleanedStr = bracketMatch[1].trim();
+            let parsedDate = new Date(cleanedStr);
+            if (isNaN(parsedDate.getTime())) {
+                const parts = cleanedStr.split(',');
+                if (parts.length >= 2) {
+                    let timePart = parts[0].includes(':') ? parts[0].trim() : parts[1].trim();
+                    let datePart = parts[0].includes(':') ? parts[1].trim() : parts[0].trim();
+                    parsedDate = new Date(`${datePart} ${timePart}`);
+                    if (isNaN(parsedDate.getTime())) {
+                        const dateParts = datePart.split(/[\/\-]/);
+                        if (dateParts.length === 3) {
+                            parsedDate = new Date(`${dateParts[1]}/${dateParts[0]}/${dateParts[2]} ${timePart}`);
+                        }
+                    }
+                }
+            }
+            return isNaN(parsedDate.getTime()) ? 0 : parsedDate.getTime();
+        }
+
+        // Non-bracket format: "1:59 PM, 3/27/2026 Author: "
+        const noBracketMatch = timeStr.match(/^(\d{1,2}:\d{2}(?:\s*[AP]M)?),\s*(.+?)\s+[\w\s]+:\s*$/i);
+        if (noBracketMatch) {
+            const timePart = noBracketMatch[1].trim();
+            const datePart = noBracketMatch[2].trim();
+            let parsedDate = new Date(`${datePart} ${timePart}`);
+            if (isNaN(parsedDate.getTime())) {
+                const dateParts = datePart.split(/[\/\-]/);
+                if (dateParts.length === 3) {
+                    parsedDate = new Date(`${dateParts[1]}/${dateParts[0]}/${dateParts[2]} ${timePart}`);
+                }
+            }
+            return isNaN(parsedDate.getTime()) ? 0 : parsedDate.getTime();
+        }
+
+        return 0;
     }
 
     async function runExtraction(startTime, endTime) {
@@ -96,7 +151,7 @@ if (!window.waExporterInjected) {
         }
 
         if (!scrollContainer) {
-            console.error("[WA-Exporter] Could not find the scroll container! The script cannot scroll.");
+            console.error("[WA-Exporter] Could not find the scroll container!");
             alert("WA-Exporter Error: Scroll container not found.");
             return [];
         }
@@ -131,7 +186,9 @@ if (!window.waExporterInjected) {
 
                 if (messageTime > 0 && messageTime >= startTime && messageTime <= endTime) {
                     const allTextElements = Array.from(node.querySelectorAll(SELECTORS.messageText));
-                    const validTextElements = allTextElements.filter(el => !el.classList.contains('quoted-mention') && !el.closest('.quoted-mention'));
+                    const validTextElements = allTextElements.filter(el =>
+                        !el.classList.contains('quoted-mention') && !el.closest('.quoted-mention')
+                    );
                     const quotedElement = node.querySelector(SELECTORS.quotedText);
 
                     let quotedText = "";
@@ -139,11 +196,20 @@ if (!window.waExporterInjected) {
                         quotedText = extractTextWithEmojis(quotedElement);
                         if (!quotedText.trim()) {
                             const qHtml = quotedElement.innerHTML;
-                            if (qHtml.includes('data-icon="image"') || qHtml.includes('<img')) quotedText = "Imagen/Sticker";
-                            else if (qHtml.includes('data-icon="video"')) quotedText = "Video";
-                            else if (qHtml.includes('data-icon="audio"') || qHtml.includes('Voice message') || qHtml.includes('ptt-status')) quotedText = "Audio / Nota de voz";
-                            else if (qHtml.includes('data-icon="gif"')) quotedText = "GIF";
-                            else quotedText = "Multimedia";
+                            if (qHtml.includes('data-icon="image') || qHtml.includes('blob:') || qHtml.includes('data:image')) {
+                                const qBlobImg = quotedElement.querySelector('img[src^="blob:"]');
+                                if (qBlobImg && qBlobImg.hasAttribute('src')) {
+                                    quotedText = `[Imagen citada: ${qBlobImg.getAttribute('src')}]`;
+                                } else {
+                                    quotedText = "[Imagen citada]";
+                                }
+                            } else if (qHtml.includes('data-icon="audio') || qHtml.includes('ptt-status')) {
+                                quotedText = "[Audio citado]";
+                            } else if (qHtml.includes('data-icon="video')) {
+                                quotedText = "[Video citado]";
+                            } else if (qHtml.includes('data-icon="document')) {
+                                quotedText = "[Archivo citado]";
+                            }
                         }
                     }
 
@@ -153,38 +219,72 @@ if (!window.waExporterInjected) {
                     }
 
                     const nodeHtml = node.innerHTML;
+                    let mediaTag = "";
 
-                    if (!messageText.trim() || nodeHtml.includes('data-icon="recalled"')) {
-                        if (nodeHtml.includes('data-icon="recalled"')) {
-                            messageText = "Mensaje eliminado";
-                        } else if (nodeHtml.includes('alt="Sticker"') || nodeHtml.includes('alt="sticker"')) {
-                            messageText = "[Sticker]";
-                        } else if (nodeHtml.includes('aria-label="Voice message"') || nodeHtml.includes('aria-label="Play voice message"') || nodeHtml.includes('data-icon="ptt-status"')) {
-                            messageText = "[Audio]";
-                        } else if (nodeHtml.includes('data-icon="video"') || node.querySelector('video')) {
-                            messageText = "[Video]";
-                        } else if (nodeHtml.includes('data-icon="gif"')) {
-                            messageText = "[GIF]";
-                        } else if (nodeHtml.includes('blob:') || nodeHtml.includes('data:image')) {
-                            messageText = "[Imagen]";
-                        } else if (nodeHtml.includes('data-icon="document"')) {
-                            messageText = "[Archivo]";
-                        } else if (nodeHtml.includes('data-icon="contact"')) {
-                            messageText = "[Contacto]";
-                        } else if (nodeHtml.includes('data-icon="location"')) {
-                            messageText = "[Ubicación]";
+                    if (nodeHtml.includes('data-icon="recalled"')) {
+                        mediaTag = "Mensaje eliminado";
+
+                    } else if (nodeHtml.includes('alt="Sticker"') || nodeHtml.includes('alt="sticker"')
+                        || node.querySelector('img[src^="blob:"][class*="sticker"], canvas[class*="sticker"]')
+                        || nodeHtml.includes('data-icon="sticker"')) {
+                        mediaTag = "[Sticker]";
+
+                        // Documents BEFORE audio — "audio" substring appears in some doc icon names
+                    } else if (nodeHtml.includes('data-icon="document') || nodeHtml.includes('data-icon="pdf')
+                        || nodeHtml.includes('data-icon="xls') || nodeHtml.includes('data-icon="ppt')
+                        || nodeHtml.includes('data-icon="txt') || nodeHtml.includes('data-icon="zip')
+                        || node.querySelector('span[data-testid*="media-file"], [data-testid="media-document"]')) {
+                        // Try to grab filename
+                        const nameEl = node.querySelector('span[dir="auto"].ao3e, [data-testid="media-document-title"]')
+                            || node.querySelector('span[dir="auto"]');
+                        const fname = nameEl ? nameEl.textContent.trim() : null;
+                        mediaTag = fname ? `[Archivo: ${fname}]` : "[Archivo]";
+
+                        // Audio / PTT — checked AFTER documents
+                    } else if (
+                        nodeHtml.includes('aria-label="Voice message"') ||
+                        nodeHtml.includes('aria-label="Play voice message"') ||
+                        nodeHtml.includes('data-icon="ptt-status"') ||
+                        nodeHtml.includes('data-icon="audio-play"') ||
+                        node.querySelector('button[aria-label="Play voice message"]')
+                    ) {
+                        mediaTag = "[Audio]";
+
+                        // GIF — WhatsApp renders GIFs as <video autoplay loop> or has data-icon="gif"
+                    } else if (nodeHtml.includes('data-icon="gif') || nodeHtml.includes('data-gif-attribution')
+                        || node.querySelector('video[autoplay][loop]')) {
+                        mediaTag = "[GIF]";
+
+                    } else if (nodeHtml.includes('data-icon="video"') || node.querySelector('video')) {
+                        mediaTag = "[Video]";
+
+                    } else if (nodeHtml.includes('data-icon="contact')) {
+                        mediaTag = "[Contacto]";
+
+                    } else if (nodeHtml.includes('data-icon="location')) {
+                        mediaTag = "[Ubicación]";
+
+                    } else if (nodeHtml.includes('data-icon="image')
+                        || node.querySelector('img[src^="blob:"], img[src^="data:image"]')) {
+                        const blobImg = node.querySelector('img[src^="blob:"]');
+                        if (blobImg && blobImg.hasAttribute('src')) {
+                            mediaTag = `[Imagen: ${blobImg.getAttribute('src')}]`;
                         } else {
-                            messageText = messageText.trim() ? "Mensaje eliminado" : "[Contenido Multimedia]";
+                            mediaTag = "[Imagen]";
                         }
+                    }
+
+                    if (mediaTag === "Mensaje eliminado") {
+                        messageText = "[Mensaje eliminado]";
+                    } else if (mediaTag) {
+                        messageText = messageText.trim() ? `${mediaTag} ${messageText.trim()}` : mediaTag;
+                    } else if (!messageText.trim()) {
+                        messageText = "[Contenido Multimedia]";
                     }
 
                     if (messageText || timeString) {
                         let rawFormat = timeString || `[${new Date(messageTime).toISOString()}] `;
-
-                        if (quotedText) {
-                            rawFormat += `[Respondiendo a: "${quotedText}"] `;
-                        }
-
+                        if (quotedText) rawFormat += `[Respondiendo a: "${quotedText}"] `;
                         rawFormat += messageText;
 
                         let uniqueKey;
@@ -250,13 +350,11 @@ if (!window.waExporterInjected) {
                     if (oldestActualNode) {
                         oldestActualNode.scrollIntoView({ behavior: 'instant', block: 'start' });
                     }
-
                     scrollContainer.scrollBy(0, -1500);
                     scrollContainer.scrollTop -= 2000;
                     if (scrollContainer.scrollTop <= 100) {
                         scrollContainer.scrollTop = 0;
                     }
-
                     scrollContainer.dispatchEvent(new WheelEvent('wheel', { deltaY: -2000, bubbles: true }));
                     scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
 
@@ -267,46 +365,8 @@ if (!window.waExporterInjected) {
             }
         }
 
-        return Array.from(extractedMessagesMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+        return Array.from(extractedMessagesMap.values())
+            .sort((a, b) => a.timestamp - b.timestamp);
     }
 
-    function extractTimestampString(node) {
-        const metadataNode = node.querySelector(SELECTORS.metadata);
-        if (metadataNode) {
-            return metadataNode.getAttribute('data-pre-plain-text');
-        }
-        return null;
-    }
-
-    function parseWhatsAppTime(timeStr) {
-        if (!timeStr) return 0;
-
-        const match = timeStr.match(/\[(.*?)\]/);
-        if (!match) return 0;
-
-        let cleanedStr = match[1].trim();
-        cleanedStr = cleanedStr.replace(/[\u200E\u200F\u202A-\u202E]/g, '');
-
-        let parsedDate = new Date(cleanedStr);
-
-        if (isNaN(parsedDate.getTime())) {
-            const parts = cleanedStr.split(',');
-            if (parts.length >= 2) {
-                let timePart = parts[0].includes(':') ? parts[0].trim() : parts[1].trim();
-                let datePart = parts[0].includes(':') ? parts[1].trim() : parts[0].trim();
-
-                parsedDate = new Date(`${datePart} ${timePart}`);
-
-                if (isNaN(parsedDate.getTime())) {
-                    const dateParts = datePart.split(/[\/\-]/);
-                    if (dateParts.length === 3) {
-                        const swappedDate = `${dateParts[1]}/${dateParts[0]}/${dateParts[2]} ${timePart}`;
-                        parsedDate = new Date(swappedDate);
-                    }
-                }
-            }
-        }
-
-        return isNaN(parsedDate.getTime()) ? 0 : parsedDate.getTime();
-    }
 }
