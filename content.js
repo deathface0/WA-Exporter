@@ -196,29 +196,36 @@ if (!window.waExporterInjected) {
                         quotedText = extractTextWithEmojis(quotedElement);
                         if (!quotedText.trim()) {
                             const qHtml = quotedElement.innerHTML;
-                            if (qHtml.includes('data-icon="image') || qHtml.includes('blob:') || qHtml.includes('data:image')) {
+                            const qIcons = [...qHtml.matchAll(/data-icon="([^"]+)"/g)].map(m => m[1]);
+                            const qHasIcon = (name) => qIcons.some(i => i.includes(name));
+
+                            if (qHasIcon('image') || qHtml.includes('blob:') || qHtml.includes('data:image')) {
                                 const qBlobImg = quotedElement.querySelector('img[src^="blob:"]');
                                 if (qBlobImg && qBlobImg.hasAttribute('src')) {
                                     quotedText = `[Imagen citada: ${qBlobImg.getAttribute('src')}]`;
                                 } else {
                                     quotedText = "[Imagen citada]";
                                 }
-                            } else if (qHtml.includes('data-icon="audio') || qHtml.includes('ptt-status')) {
+                            } else if (qHasIcon('audio') || qHasIcon('ptt-status')) {
                                 const qBlobAudio = quotedElement.querySelector('audio[src^="blob:"]');
                                 if (qBlobAudio && qBlobAudio.hasAttribute('src')) {
                                     quotedText = `[Audio citado: ${qBlobAudio.getAttribute('src')}]`;
                                 } else {
                                     quotedText = "[Audio citado]";
                                 }
-                            } else if (qHtml.includes('data-icon="video') || quotedElement.querySelector('video')) {
+                            } else if (qHasIcon('video') || quotedElement.querySelector('video')) {
                                 const qBlobVideo = quotedElement.querySelector('video[src^="blob:"]');
                                 if (qBlobVideo && qBlobVideo.hasAttribute('src')) {
                                     quotedText = `[Video citado: ${qBlobVideo.getAttribute('src')}]`;
                                 } else {
                                     quotedText = "[Video citado]";
                                 }
-                            } else if (qHtml.includes('data-icon="document')) {
-                                quotedText = "[Archivo citado]";
+                            } else {
+                                const qFileTypeSpan = quotedElement.querySelector('span[data-meta-key="type"]');
+                                if (qFileTypeSpan || ['document', 'pdf', 'xls', 'ppt', 'txt', 'zip', 'ms-office'].some(qHasIcon)) {
+                                    const fType = qFileTypeSpan ? qFileTypeSpan.textContent.trim() : "";
+                                    quotedText = fType ? `[Archivo ${fType} citado]` : "[Archivo citado]";
+                                }
                             }
                         }
                     }
@@ -231,31 +238,40 @@ if (!window.waExporterInjected) {
                     const nodeHtml = node.innerHTML;
                     let mediaTag = "";
 
-                    if (nodeHtml.includes('data-icon="recalled"')) {
+                    const dataIcons = [...nodeHtml.matchAll(/data-icon="([^"]+)"/g)].map(m => m[1]);
+                    const hasIcon = (name) => dataIcons.some(i => i.includes(name));
+
+                    if (hasIcon('recalled')) {
                         mediaTag = "Mensaje eliminado";
 
-                    } else if (nodeHtml.includes('alt="Sticker"') || nodeHtml.includes('alt="sticker"')
-                        || node.querySelector('img[src^="blob:"][class*="sticker"], canvas[class*="sticker"]')
-                        || nodeHtml.includes('data-icon="sticker"')) {
+                    } else if (hasIcon('sticker') || nodeHtml.includes('alt="Sticker"') || nodeHtml.includes('alt="sticker"')
+                        || node.querySelector('img[src^="blob:"][class*="sticker"], canvas[class*="sticker"]')) {
                         mediaTag = "[Sticker]";
 
                         // Documents BEFORE audio — "audio" substring appears in some doc icon names
-                    } else if (nodeHtml.includes('data-icon="document') || nodeHtml.includes('data-icon="pdf')
-                        || nodeHtml.includes('data-icon="xls') || nodeHtml.includes('data-icon="ppt')
-                        || nodeHtml.includes('data-icon="txt') || nodeHtml.includes('data-icon="zip')
-                        || node.querySelector('span[data-testid*="media-file"], [data-testid="media-document"]')) {
+                    } else if (
+                        node.querySelector('span[data-meta-key="type"]') ||
+                        ['document', 'pdf', 'xls', 'ppt', 'txt', 'zip', 'ms-office'].some(hasIcon) ||
+                        node.querySelector('span[data-testid*="media-file"], [data-testid="media-document"]')
+                    ) {
+                        const fileTypeSpan = node.querySelector('span[data-meta-key="type"]');
+                        const fType = fileTypeSpan ? fileTypeSpan.textContent.trim() : "";
+
                         // Try to grab filename
                         const nameEl = node.querySelector('span[dir="auto"].ao3e, [data-testid="media-document-title"]')
                             || node.querySelector('span[dir="auto"]');
                         const fname = nameEl ? nameEl.textContent.trim() : null;
-                        mediaTag = fname ? `[Archivo: ${fname}]` : "[Archivo]";
+
+                        if (fname && fType) mediaTag = `[Archivo ${fType}: ${fname}]`;
+                        else if (fname) mediaTag = `[Archivo: ${fname}]`;
+                        else if (fType) mediaTag = `[Archivo ${fType}]`;
+                        else mediaTag = "[Archivo]";
 
                         // Audio / PTT — checked AFTER documents
                     } else if (
+                        hasIcon('ptt-status') || hasIcon('audio-play') ||
                         nodeHtml.includes('aria-label="Voice message"') ||
                         nodeHtml.includes('aria-label="Play voice message"') ||
-                        nodeHtml.includes('data-icon="ptt-status"') ||
-                        nodeHtml.includes('data-icon="audio-play"') ||
                         node.querySelector('button[aria-label="Play voice message"]')
                     ) {
                         const blobAudio = node.querySelector('audio[src^="blob:"]');
@@ -266,7 +282,7 @@ if (!window.waExporterInjected) {
                         }
 
                         // GIF — WhatsApp renders GIFs as <video autoplay loop> or has data-icon="gif"
-                    } else if (nodeHtml.includes('data-icon="gif') || nodeHtml.includes('data-gif-attribution')
+                    } else if (hasIcon('gif') || nodeHtml.includes('data-gif-attribution')
                         || node.querySelector('video[autoplay][loop]')) {
                         const blobGif = node.querySelector('video[src^="blob:"]');
                         if (blobGif && blobGif.hasAttribute('src')) {
@@ -275,7 +291,7 @@ if (!window.waExporterInjected) {
                             mediaTag = "[GIF]";
                         }
 
-                    } else if (nodeHtml.includes('data-icon="video"') || node.querySelector('video')) {
+                    } else if (hasIcon('video') || node.querySelector('video')) {
                         const blobVideo = node.querySelector('video[src^="blob:"]');
                         if (blobVideo && blobVideo.hasAttribute('src')) {
                             mediaTag = `[Video: ${blobVideo.getAttribute('src')}]`;
@@ -283,14 +299,13 @@ if (!window.waExporterInjected) {
                             mediaTag = "[Video]";
                         }
 
-                    } else if (nodeHtml.includes('data-icon="contact')) {
+                    } else if (hasIcon('contact')) {
                         mediaTag = "[Contacto]";
 
-                    } else if (nodeHtml.includes('data-icon="location')) {
+                    } else if (hasIcon('location')) {
                         mediaTag = "[Ubicación]";
 
-                    } else if (nodeHtml.includes('data-icon="image')
-                        || node.querySelector('img[src^="blob:"], img[src^="data:image"]')) {
+                    } else if (hasIcon('image') || node.querySelector('img[src^="blob:"], img[src^="data:image"]')) {
                         const blobImg = node.querySelector('img[src^="blob:"]');
                         if (blobImg && blobImg.hasAttribute('src')) {
                             mediaTag = `[Imagen: ${blobImg.getAttribute('src')}]`;
