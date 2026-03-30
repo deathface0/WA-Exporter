@@ -199,7 +199,14 @@ if (!window.waExporterInjected) {
                             const qIcons = [...qHtml.matchAll(/data-icon="([^"]+)"/g)].map(m => m[1]);
                             const qHasIcon = (name) => qIcons.some(i => i.includes(name));
 
-                            if (qHasIcon('image') || qHtml.includes('blob:') || qHtml.includes('data:image')) {
+                            if (qHasIcon('sticker') || quotedElement.querySelector('img[alt*="Sticker"], img[alt*="sticker"], img[src^="blob:"][class*="sticker"], canvas[class*="sticker"]')) {
+                                const qBlobSticker = quotedElement.querySelector('img[alt*="Sticker"][src^="blob:"], img[alt*="sticker"][src^="blob:"], img[src^="blob:"][class*="sticker"]');
+                                if (qBlobSticker && qBlobSticker.hasAttribute('src')) {
+                                    quotedText = `[Sticker citado: ${qBlobSticker.getAttribute('src')}]`;
+                                } else {
+                                    quotedText = "[Sticker citado]";
+                                }
+                            } else if (qHasIcon('image') || qHtml.includes('blob:') || qHtml.includes('data:image')) {
                                 const qBlobImg = quotedElement.querySelector('img[src^="blob:"]');
                                 if (qBlobImg && qBlobImg.hasAttribute('src')) {
                                     quotedText = `[Imagen citada: ${qBlobImg.getAttribute('src')}]`;
@@ -251,9 +258,13 @@ if (!window.waExporterInjected) {
                     if (hasIcon('recalled')) {
                         mediaTag = "Mensaje eliminado";
 
-                    } else if (hasIcon('sticker') || nodeHtml.includes('alt="Sticker"') || nodeHtml.includes('alt="sticker"')
-                        || node.querySelector('img[src^="blob:"][class*="sticker"], canvas[class*="sticker"]')) {
-                        mediaTag = "[Sticker]";
+                    } else if (hasIcon('sticker') || node.querySelector('img[alt*="Sticker"], img[alt*="sticker"], img[src^="blob:"][class*="sticker"], canvas[class*="sticker"]')) {
+                        const blobSticker = node.querySelector('img[alt*="Sticker"][src^="blob:"], img[alt*="sticker"][src^="blob:"], img[src^="blob:"][class*="sticker"]');
+                        if (blobSticker && blobSticker.hasAttribute('src')) {
+                            mediaTag = `[Sticker: ${blobSticker.getAttribute('src')}]`;
+                        } else {
+                            mediaTag = "[Sticker]";
+                        }
 
                         // Documents BEFORE audio — "audio" substring appears in some doc icon names
                     } else if (
