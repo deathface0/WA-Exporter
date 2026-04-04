@@ -4,42 +4,135 @@
 <head>
     <meta charset="utf-8">
     <style>
+        :root {
+            color-scheme: light dark;
+            --bg-color: #f0f2f5;
+            --surface-color: #ffffff;
+            --text-primary: #111b21;
+            --text-secondary: #667781;
+            --brand-color: #00a884;
+            --brand-hover: #019071;
+            --border-color: #d1d7db;
+            --shadow: 0 2px 4px rgba(0,0,0,0.08);
+            
+            --btn-copy: #34B7F1;
+            --btn-copy-hover: #2ba4de;
+            --btn-download: #25D366;
+            --btn-download-hover: #1ca84f;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-color: #111b21;
+                --surface-color: #202c33;
+                --text-primary: #e9edef;
+                --text-secondary: #8696a0;
+                --brand-color: #00a884;
+                --brand-hover: #019071;
+                --border-color: #2f3e46;
+                --shadow: 0 2px 4px rgba(0,0,0,0.3);
+            }
+        }
+
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
             width: 350px;
             padding: 16px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            color: #111;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
         }
 
         h3 {
-            margin-bottom: 14px;
+            margin-bottom: 16px;
+            text-align: left;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .segmented-control {
+            display: flex;
+            background: var(--border-color);
+            border-radius: 8px;
+            padding: 4px;
+            margin-bottom: 16px;
+            position: relative;
+        }
+
+        .segmented-control label {
+            flex: 1;
+            cursor: pointer;
+            position: relative;
+            z-index: 1;
+        }
+
+        .segmented-control input[type="radio"] {
+            display: none;
+        }
+
+        .segmented-control .pill {
+            display: block;
+            text-align: center;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            transition: color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .segmented-control input[type="radio"]:checked + .pill {
+            color: var(--text-primary);
+            background: var(--surface-color);
+            box-shadow: var(--shadow);
+        }
+
+        .card {
+            background: var(--surface-color);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 16px;
+            box-shadow: var(--shadow);
         }
 
         .input-group {
             margin-bottom: 12px;
         }
 
-        label {
-            display: block;
-            margin-bottom: 4px;
-            font-weight: 600;
-            font-size: 13px;
+        .input-group:last-child {
+            margin-bottom: 0;
         }
 
-        input {
+        label.field-label {
+            display: block;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 12px;
+        }
+
+        input[type="datetime-local"],
+        input[type="number"] {
             width: 100%;
-            padding: 8px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
+            padding: 8px 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-color);
+            color: var(--text-primary);
             font-size: 13px;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        input:focus {
+            border-color: var(--brand-color);
+            box-shadow: 0 0 0 2px rgba(0, 168, 132, 0.2);
         }
 
         .btn-group {
             display: flex;
             gap: 8px;
-            margin-top: 4px;
         }
 
         button {
@@ -47,26 +140,65 @@
             padding: 10px;
             color: #fff;
             border: none;
-            border-radius: 4px;
+            border-radius: 6px;
             cursor: pointer;
-            font-weight: 700;
+            font-weight: 600;
             font-size: 13px;
-            transition: opacity 0.15s;
+            transition: transform 0.1s, opacity 0.2s, background-color 0.2s;
         }
 
-        button:hover { opacity: 0.85; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button:active:not(:disabled) {
+            transform: scale(0.97);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
 
-        #copyBtn     { background: #34B7F1; }
-        #downloadBtn { background: #25D366; }
+        #copyBtn { background: var(--btn-copy); }
+        #copyBtn:hover:not(:disabled) { background: var(--btn-copy-hover); }
+        
+        #downloadBtn { background: var(--btn-download); }
+        #downloadBtn:hover:not(:disabled) { background: var(--btn-download-hover); }
+
+        .status-container {
+            margin-top: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            min-height: 20px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .status-container.visible {
+            opacity: 1;
+        }
 
         #statusMsg {
-            text-align: center;
-            color: #555;
+            color: var(--text-secondary);
             font-size: 13px;
-            font-weight: 600;
-            margin-top: 14px;
-            min-height: 18px;
+            font-weight: 500;
+        }
+
+        .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--border-color);
+            border-top-color: var(--brand-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+
+        .spinner.active {
+            display: block;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
     </style>
 </head>
@@ -74,30 +206,32 @@
 <body>
     <h3>Chat Exporter</h3>
 
-    <div class="input-group" style="display: flex; gap: 10px; margin-bottom: 16px;">
-        <label style="font-weight: normal; margin: 0; display: inline-flex; align-items: center; gap: 4px;">
-            <input type="radio" name="extractMode" value="date" checked> By Date Range
+    <div class="segmented-control">
+        <label>
+            <input type="radio" name="extractMode" value="date" checked>
+            <span class="pill">By Date Range</span>
         </label>
-        <label style="font-weight: normal; margin: 0; display: inline-flex; align-items: center; gap: 4px;">
-            <input type="radio" name="extractMode" value="count"> By Count
+        <label>
+            <input type="radio" name="extractMode" value="count">
+            <span class="pill">By Count</span>
         </label>
     </div>
 
-    <div id="dateInputs">
+    <div class="card" id="dateInputs">
         <div class="input-group">
-            <label for="startTime">Start Timestamp</label>
+            <label class="field-label" for="startTime">Start Timestamp</label>
             <input type="datetime-local" id="startTime">
         </div>
 
         <div class="input-group">
-            <label for="endTime">End Timestamp</label>
+            <label class="field-label" for="endTime">End Timestamp</label>
             <input type="datetime-local" id="endTime">
         </div>
     </div>
 
-    <div id="countInput" style="display: none;">
+    <div class="card" id="countInput" style="display: none;">
         <div class="input-group">
-            <label for="messageCount">Number of Messages</label>
+            <label class="field-label" for="messageCount">Number of Messages</label>
             <input type="number" id="messageCount" value="100" min="1">
         </div>
     </div>
@@ -107,7 +241,10 @@
         <button id="downloadBtn">Download TXT</button>
     </div>
 
-    <p id="statusMsg"></p>
+    <div class="status-container" id="statusContainer">
+        <div class="spinner" id="spinner"></div>
+        <p id="statusMsg"></p>
+    </div>
 
     <script src="popup.js"></script>
 </body>

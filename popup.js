@@ -99,23 +99,39 @@ function downloadTxt(filename, text) {
 
 /* ── Action Handler ── */
 
-function setStatus(msg) {
-    const el = $('statusMsg');
-    if (el) el.textContent = msg;
+function setStatus(msg, showSpinner = false) {
+    const container = $('statusContainer');
+    const msgEl = $('statusMsg');
+    const spinner = $('spinner');
+
+    if (!container) return;
+
+    if (msg) {
+        msgEl.textContent = msg;
+        container.classList.add('visible');
+    } else {
+        container.classList.remove('visible');
+    }
+
+    if (showSpinner) {
+        spinner.classList.add('active');
+    } else {
+        spinner.classList.remove('active');
+    }
 }
 
 async function handleAction(action, btn) {
     const original = btn.textContent;
     btn.textContent = 'Extracting...';
     btn.disabled = true;
-    setStatus('Fetching messages... Please wait.');
+    setStatus('Fetching messages...', true);
 
     try {
         const data = await executeExtraction();
 
         if (!data?.length) {
-            btn.textContent = 'No data found';
-            setStatus('No messages found within this range.');
+            btn.textContent = 'No data';
+            setStatus('No messages found within this range.', false);
             setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 3000);
             return;
         }
@@ -124,17 +140,17 @@ async function handleAction(action, btn) {
 
         if (action === 'copy') {
             await copyToClipboard(text);
-            btn.textContent = 'Copied to clipboard!';
+            btn.textContent = 'Copied!';
         } else {
-            downloadTxt(`WA_Chat_Export_${Date.now()}.txt`, text);
+            downloadTxt(`WA_Chat_${Date.now()}.txt`, text);
             btn.textContent = 'Downloaded!';
         }
 
-        setStatus(`Successfully fetched ${data.length} message(s)!`);
+        setStatus(`Successfully fetched ${data.length} message(s)!`, false);
     } catch (err) {
         console.error(err);
-        btn.textContent = 'Error occurred';
-        setStatus('An error occurred during extraction.');
+        btn.textContent = 'Error';
+        setStatus('An error occurred during extraction.', false);
     }
 
     setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 3000);
