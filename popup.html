@@ -74,14 +74,32 @@
 <body>
     <h3>Chat Exporter</h3>
 
-    <div class="input-group">
-        <label for="startTime">Start Timestamp</label>
-        <input type="datetime-local" id="startTime">
+    <div class="input-group" style="display: flex; gap: 10px; margin-bottom: 16px;">
+        <label style="font-weight: normal; margin: 0; display: inline-flex; align-items: center; gap: 4px;">
+            <input type="radio" name="extractMode" value="date" checked> By Date Range
+        </label>
+        <label style="font-weight: normal; margin: 0; display: inline-flex; align-items: center; gap: 4px;">
+            <input type="radio" name="extractMode" value="count"> By Count
+        </label>
     </div>
 
-    <div class="input-group">
-        <label for="endTime">End Timestamp</label>
-        <input type="datetime-local" id="endTime">
+    <div id="dateInputs">
+        <div class="input-group">
+            <label for="startTime">Start Timestamp</label>
+            <input type="datetime-local" id="startTime">
+        </div>
+
+        <div class="input-group">
+            <label for="endTime">End Timestamp</label>
+            <input type="datetime-local" id="endTime">
+        </div>
+    </div>
+
+    <div id="countInput" style="display: none;">
+        <div class="input-group">
+            <label for="messageCount">Number of Messages</label>
+            <input type="number" id="messageCount" value="100" min="1">
+        </div>
     </div>
 
     <div class="btn-group">

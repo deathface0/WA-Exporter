@@ -15,6 +15,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     $('startTime').value = formatLocalDatetime(yesterday);
     $('endTime').value   = formatLocalDatetime(now);
+
+    const modeRadios = document.querySelectorAll('input[name="extractMode"]');
+    modeRadios.forEach(r => {
+        r.addEventListener('change', (e) => {
+            if (e.target.value === 'date') {
+                $('dateInputs').style.display = 'block';
+                $('countInput').style.display = 'none';
+            } else {
+                $('dateInputs').style.display = 'none';
+                $('countInput').style.display = 'block';
+            }
+        });
+    });
 });
 
 /* ── Tab & Extraction ── */
@@ -25,26 +38,34 @@ async function getActiveTab() {
 }
 
 async function executeExtraction() {
-    const startVal = $('startTime').value;
-    const endVal   = $('endTime').value;
+    const mode = document.querySelector('input[name="extractMode"]:checked').value;
+    let messagePayload = { action: 'extract_chat', mode: mode };
 
-    if (!startVal || !endVal) { alert('Missing timestamps.'); return null; }
+    if (mode === 'date') {
+        const startVal = $('startTime').value;
+        const endVal   = $('endTime').value;
 
-    const startTime = new Date(startVal).getTime();
-    const endTime   = new Date(endVal).getTime();
+        if (!startVal || !endVal) { alert('Missing timestamps.'); return null; }
 
-    if (startTime > endTime) { alert('Start must be before end.'); return null; }
+        const startTime = new Date(startVal).getTime();
+        const endTime   = new Date(endVal).getTime();
+
+        if (startTime > endTime) { alert('Start must be before end.'); return null; }
+        
+        messagePayload.start = startTime;
+        messagePayload.end = endTime;
+    } else {
+        const count = parseInt($('messageCount').value, 10);
+        if (!count || count <= 0) { alert('Invalid message count.'); return null; }
+        messagePayload.count = count;
+    }
 
     const tab = await getActiveTab();
     if (!tab?.url?.includes('web.whatsapp.com')) { alert('Navigate to WhatsApp Web.'); return null; }
 
     await browser.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
 
-    const response = await browser.tabs.sendMessage(tab.id, {
-        action: 'extract_chat',
-        start:  startTime,
-        end:    endTime
-    });
+    const response = await browser.tabs.sendMessage(tab.id, messagePayload);
 
     return response?.data ?? null;
 }

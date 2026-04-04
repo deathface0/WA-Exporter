@@ -11,7 +11,7 @@ if (!window.waExporterInjected) {
 
     browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === "extract_chat") {
-            runExtraction(request.start, request.end).then(data => sendResponse({ data }));
+            runExtraction(request).then(data => sendResponse({ data }));
             return true;
         }
     });
@@ -130,8 +130,17 @@ if (!window.waExporterInjected) {
         return 0;
     }
 
-    async function runExtraction(startTime, endTime) {
-        console.log(`[WA-Exporter] Starting extraction. Target window: ${new Date(startTime).toLocaleString()} to ${new Date(endTime).toLocaleString()}`);
+    async function runExtraction(options) {
+        const mode = options.mode || 'date';
+        const startTime = options.start;
+        const endTime = options.end;
+        const targetCount = options.count;
+
+        if (mode === 'date') {
+            console.log(`[WA-Exporter] Starting extraction. Target window: ${new Date(startTime).toLocaleString()} to ${new Date(endTime).toLocaleString()}`);
+        } else {
+            console.log(`[WA-Exporter] Starting extraction. Target count: ${targetCount} messages`);
+        }
 
         let scrollContainer = document.querySelector(SELECTORS.scrollContainer);
 
@@ -184,7 +193,14 @@ if (!window.waExporterInjected) {
                     }
                 }
 
-                if (messageTime > 0 && messageTime >= startTime && messageTime <= endTime) {
+                let inRange = false;
+                if (mode === 'date') {
+                    inRange = (messageTime > 0 && messageTime >= startTime && messageTime <= endTime);
+                } else if (mode === 'count') {
+                    inRange = (messageTime > 0);
+                }
+
+                if (inRange) {
                     const allTextElements = Array.from(node.querySelectorAll(SELECTORS.messageText));
                     const validTextElements = allTextElements.filter(el =>
                         !el.classList.contains('quoted-mention') && !el.closest('.quoted-mention')
@@ -393,9 +409,16 @@ if (!window.waExporterInjected) {
                     }
                 }
 
-                if (oldestTime > 0 && oldestTime <= startTime) {
-                    fetching = false;
-                    break;
+                if (mode === 'date') {
+                    if (oldestTime > 0 && oldestTime <= startTime) {
+                        fetching = false;
+                        break;
+                    }
+                } else if (mode === 'count') {
+                    if (extractedMessagesMap.size >= targetCount) {
+                        fetching = false;
+                        break;
+                    }
                 }
 
                 if (oldestSignature === lastSignature && oldestSignature !== "") {
@@ -428,8 +451,14 @@ if (!window.waExporterInjected) {
             }
         }
 
-        return Array.from(extractedMessagesMap.values())
+        let result = Array.from(extractedMessagesMap.values())
             .sort((a, b) => a.timestamp - b.timestamp);
+            
+        if (mode === 'count') {
+            result = result.slice(-targetCount);
+        }
+        
+        return result;
     }
 
 }
