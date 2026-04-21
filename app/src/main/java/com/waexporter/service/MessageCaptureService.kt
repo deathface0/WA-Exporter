@@ -78,7 +78,11 @@ class MessageCaptureService : NotificationListenerService() {
         val messageBody = bigText ?: text
 
         // Strip the "Sender: " prefix from group message body if present
-        val cleanBody = if (isGroup) messageBody.substringAfter(": ", missingDelimiterValue = messageBody) else messageBody
+        val cleanBody = if (isGroup && messageBody.startsWith("$sender: ")) {
+            messageBody.removePrefix("$sender: ")
+        } else {
+            messageBody
+        }
 
         // Detect media type from notification text emoji / keywords
         val mediaType = detectMediaType(text)
@@ -145,16 +149,34 @@ class MessageCaptureService : NotificationListenerService() {
      *   Individual: title = "Alice", text = "Hey!"
      *   Group:      title = "Family Group", text = "Alice: Hey!"
      *
-     * We heuristically detect groups by checking if text matches "Word(s): …"
+     * Detects groups via three WhatsApp notification title formats:
+     *
+     *  1. Stacked group:  title = "Family (5 messages): Alice"   text = "Hello!"
+     *  2. Single group:   title = "Family"                       text = "Alice: Hello!"
+     *  3. Individual DM:  title = "Alice"                        text = "Hello!"
      */
     private fun parseChatInfo(title: String, text: String): Triple<String, Boolean, String> {
-        val groupPattern = Regex("""^(.{1,50}):\s.+""")
-        return if (groupPattern.matches(text)) {
-            val sender = groupPattern.find(text)!!.groupValues[1]
-            Triple(title, true, sender)
-        } else {
-            Triple(title, false, title)
+        // ── Format 1: stacked group ─ "GroupName (N messages): SenderName"
+        val stackedGroupPattern = Regex("""^(.+?)\s*\(\d+\s+[^)]+\):\s*(.+)$""")
+        val stackedMatch = stackedGroupPattern.find(title)
+        if (stackedMatch != null) {
+            val chatName = stackedMatch.groupValues[1].trim()
+            val sender   = stackedMatch.groupValues[2].trim()
+            return Triple(chatName, true, sender)
         }
+
+        // Strip a bare count suffix like "GroupName (5 messages)" (no sender after it)
+        val cleanTitle = title.replace(Regex("""\s*\(\d+\s+[^)]+\)$"""), "").trim()
+
+        // ── Format 2: single group ─ text starts with "Sender: …"
+        val groupPattern = Regex("""^(.{1,50}):\s.+""")
+        if (groupPattern.matches(text)) {
+            val sender = groupPattern.find(text)!!.groupValues[1].trim()
+            return Triple(cleanTitle, true, sender)
+        }
+
+        // ── Format 3: individual DM
+        return Triple(cleanTitle, false, cleanTitle)
     }
 
     /**

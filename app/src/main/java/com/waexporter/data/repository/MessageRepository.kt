@@ -7,6 +7,8 @@ import com.waexporter.data.db.entity.ChatEntity
 import com.waexporter.data.db.entity.MessageEntity
 import com.waexporter.data.media.MediaFileManager
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -42,6 +44,8 @@ class MessageRepository @Inject constructor(
 
     // ── Write operations ─────────────────────────────────────────────────────
 
+    private val saveMutex = Mutex()
+
     /**
      * Persists a captured notification as a message.
      * Creates the chat row if it does not yet exist.
@@ -58,7 +62,7 @@ class MessageRepository @Inject constructor(
         mediaType: String?,
         mediaLabel: String?,
         thumbnailBitmap: Bitmap?,
-    ): Long {
+    ): Long = saveMutex.withLock {
         // Upsert chat
         var chat = chatDao.getChatByName(chatName)
         val chatId: Long
@@ -79,7 +83,7 @@ class MessageRepository @Inject constructor(
         // Check dedup by notification key
         if (notificationKey != null) {
             val existing = messageDao.getByNotificationKey(notificationKey)
-            if (existing != null) return existing.id
+            if (existing != null) return@withLock existing.id
         }
 
         // Build partial entity to get the auto-generated ID
@@ -106,7 +110,7 @@ class MessageRepository @Inject constructor(
         // Bump chat stats
         chatDao.bumpChat(chatId, timestamp, buildPreview(sender, text, mediaType))
 
-        return messageId
+        return@withLock messageId
     }
 
     /**
