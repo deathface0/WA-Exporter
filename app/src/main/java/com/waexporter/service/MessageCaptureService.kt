@@ -6,6 +6,7 @@ import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import com.waexporter.data.repository.MessageRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -57,13 +58,84 @@ class MessageCaptureService : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (!isWhatsApp(sbn.packageName)) return
 
+        // Ignore summary / group-summary notifications (they don't carry real content)
+        if (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
+
+        val style = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(sbn.notification)
+        if (style != null && style.messages.isNotEmpty()) {
+            processMessagingStyle(sbn, style)
+        } else {
+            // Fallback to legacy parsing for old platforms or non-MessagingStyle formats
+            processLegacyNotification(sbn)
+        }
+    }
+
+    private fun processMessagingStyle(sbn: StatusBarNotification, style: NotificationCompat.MessagingStyle) {
+        val capturedAt  = System.currentTimeMillis()
+        val notifKey    = sbn.key
+
+        // For groups, conversationTitle is set. For DMs, it's null.
+        val isGroup = style.conversationTitle != null
+        
+        // Combine historic and new messages to capture everything available
+        val allMessages = (style.historicMessages + style.messages).filterNotNull()
+        if (allMessages.isEmpty()) return
+
+        // Resolve chat name: use conversation title, or fallback to the most recent sender for DMs
+        val resolvedChatName = style.conversationTitle?.toString() 
+            ?: allMessages.last().person?.name?.toString() 
+            ?: sbn.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.let { parseChatInfo(it, "").first }
+            ?: "Unknown"
+
+        for (message in allMessages) {
+            val text = message.text?.toString() ?: continue
+            val sender = message.person?.name?.toString() ?: resolvedChatName
+            val timestamp = message.timestamp
+
+            // ── Deletion detection ──────────────────────────────────────────────
+            if (isDeletionPhrase(text)) {
+                Log.d(TAG, "Deletion detected (Style) | chat=$resolvedChatName | sender=$sender")
+                serviceScope.launch {
+                    repository.markDeletedBySender(resolvedChatName, sender)
+                    deletionAlertNotifier.notifyDeleted(
+                        sender   = sender,
+                        chatName = resolvedChatName,
+                        preview  = "Message was deleted by sender"
+                    )
+                }
+                continue  // don't save the deletion notice
+            }
+
+            // ── Normal message capture ──────────────────────────────────────────
+            val mediaType = detectMediaType(text)
+            
+            // Only attach the thumbnail to the most recent message in the batch
+            val thumbnail: Bitmap? = if (message === allMessages.last()) extractThumbnail(sbn.notification.extras) else null
+
+            Log.d(TAG, "Captured (Style) | chat=$resolvedChatName | group=$isGroup | sender=$sender | media=$mediaType | ts=$timestamp")
+
+            serviceScope.launch {
+                repository.saveMessage(
+                    chatName       = resolvedChatName,
+                    isGroup        = isGroup,
+                    sender         = sender,
+                    text           = if (mediaType != null) "[${mediaLabelFor(mediaType, text)}]" else text,
+                    timestamp      = timestamp,
+                    capturedAt     = capturedAt,
+                    notificationKey = notifKey,
+                    mediaType      = mediaType,
+                    mediaLabel     = if (mediaType != null) mediaLabelFor(mediaType, text) else null,
+                    thumbnailBitmap = thumbnail,
+                )
+            }
+        }
+    }
+
+    private fun processLegacyNotification(sbn: StatusBarNotification) {
         val extras  = sbn.notification.extras
         val rawTitle = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: return
         val text     = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: return
         val bigText  = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
-
-        // Ignore summary / group-summary notifications (they don't carry real content)
-        if (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
 
         val timestamp   = sbn.postTime
         val capturedAt  = System.currentTimeMillis()
@@ -73,11 +145,9 @@ class MessageCaptureService : NotificationListenerService() {
         val (chatName, isGroup, sender) = parseChatInfo(rawTitle, text)
 
         // ── Deletion detection ──────────────────────────────────────────────
-        // WhatsApp posts a notification when a sender deletes their message.
-        // The text will be "This message was deleted" (or locale-specific variant).
         val messageBody = bigText ?: text
         if (isDeletionPhrase(messageBody) || isDeletionPhrase(text)) {
-            Log.d(TAG, "Deletion detected | chat=$chatName | sender=$sender")
+            Log.d(TAG, "Deletion detected (Legacy) | chat=$chatName | sender=$sender")
             serviceScope.launch {
                 repository.markDeletedBySender(chatName, sender)
                 deletionAlertNotifier.notifyDeleted(
@@ -86,25 +156,20 @@ class MessageCaptureService : NotificationListenerService() {
                     preview  = "Message was deleted by sender"
                 )
             }
-            return  // don't save the deletion notice as a message
+            return
         }
 
         // ── Normal message capture ──────────────────────────────────────────
-
-        // Strip the "Sender: " prefix from group message body if present
         val cleanBody = if (isGroup && messageBody.startsWith("$sender: ")) {
             messageBody.removePrefix("$sender: ")
         } else {
             messageBody
         }
 
-        // Detect media type from notification text emoji / keywords
         val mediaType = detectMediaType(text)
-
-        // Extract low-res thumbnail from notification extras (best-effort)
         val thumbnail: Bitmap? = extractThumbnail(extras)
 
-        Log.d(TAG, "Captured | chat=$chatName | group=$isGroup | sender=$sender | media=$mediaType")
+        Log.d(TAG, "Captured (Legacy) | chat=$chatName | group=$isGroup | sender=$sender | media=$mediaType")
 
         serviceScope.launch {
             repository.saveMessage(
