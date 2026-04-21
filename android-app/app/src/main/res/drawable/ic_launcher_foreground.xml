@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Foreground: a stylised export arrow inside a rounded chat bubble.
+    Viewbox 108×108 (adaptive icon safe zone is 72×72 centered).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Chat bubble outline -->
+    <path
+        android:fillColor="#4DDDD4"
+        android:pathData="
+            M54,20
+            C35.2,20 20,33.4 20,50
+            C20,58.6 23.8,66.4 30,72
+            L28,88
+            L44,80
+            C47.2,80.8 50.6,81.2 54,81.2
+            C72.8,81.2 88,67.8 88,51.2
+            C88,34.6 72.8,20 54,20
+            Z" />
+
+    <!-- Up-right arrow head -->
+    <path
+        android:fillColor="#003733"
+        android:pathData="
+            M62,36 L72,36 L72,46
+            L68,46 L68,42 L54,56 L51,53 L65,39 L62,39
+            Z" />
+</vector>
