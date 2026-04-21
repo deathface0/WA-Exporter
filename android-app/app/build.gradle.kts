@@ -54,6 +54,8 @@ android {
 dependencies {
     // Core
     implementation(libs.core.ktx)
+    implementation(libs.fragment.ktx)
+    implementation(libs.biometric)
     implementation(libs.kotlin.stdlib)
     implementation(libs.kotlinx.coroutines.android)
 

@@ -14,7 +14,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-
 private const val TAG = "WaCapture"
 private const val WHATSAPP_PACKAGE = "com.whatsapp"
 private const val WHATSAPP_BUSINESS_PACKAGE = "com.whatsapp.w4b"
@@ -35,6 +34,9 @@ class MessageCaptureService : NotificationListenerService() {
 
     @Inject
     lateinit var repository: MessageRepository
+
+    @Inject
+    lateinit var deletionAlertNotifier: DeletionAlertNotifier
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -111,12 +113,22 @@ class MessageCaptureService : NotificationListenerService() {
 
         // REASON_APP_CANCEL (8) = the app explicitly cancelled the notification.
         // WhatsApp does this when the user deletes a sent message.
-        // We can't distinguish perfectly, so we flag it; the UI shows "possibly deleted".
         if (reason == REASON_APP_CANCEL) {
             val key = sbn.key
+            val extras = sbn.notification.extras
+            val rawTitle = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
+            val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+            val (chatName, _, sender) = parseChatInfo(rawTitle, text)
+
             Log.d(TAG, "Notification removed (app_cancel) key=$key — flagging as deleted")
             serviceScope.launch {
                 repository.markDeleted(key)
+                // Fire a deletion alert push notification
+                deletionAlertNotifier.notifyDeleted(
+                    sender  = sender,
+                    chatName = chatName,
+                    preview  = text.take(120)
+                )
             }
         }
     }
