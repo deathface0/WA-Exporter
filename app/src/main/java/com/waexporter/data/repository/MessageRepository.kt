@@ -142,6 +142,14 @@ class MessageRepository @Inject constructor(
 
     suspend fun clearAllThumbnails() = mediaFileManager.clearAll()
 
+    /**
+     * Completely erases all stored chats, messages, and thumbnails from the device.
+     */
+    suspend fun deleteAllHistory() {
+        chatDao.deleteAllChats()
+        mediaFileManager.clearAll()
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private fun buildPreview(sender: String, text: String, mediaType: String?): String {

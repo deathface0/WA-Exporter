@@ -40,4 +40,7 @@ interface ChatDao {
 
     @Query("SELECT COUNT(*) FROM chats")
     suspend fun getChatCount(): Int
+
+    @Query("DELETE FROM chats")
+    suspend fun deleteAllChats()
 }

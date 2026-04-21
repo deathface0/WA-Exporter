@@ -42,6 +42,19 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun deleteAllHistory() {
+        viewModelScope.launch {
+            repository.deleteAllHistory()
+            _state.update { 
+                it.copy(
+                    thumbnailCacheSize = "0 B",
+                    totalMessages = 0,
+                    totalDeleted = 0
+                )
+            }
+        }
+    }
+
     private fun formatBytes(bytes: Long): String = when {
         bytes < 1024      -> "$bytes B"
         bytes < 1024 * 1024 -> "${bytes / 1024} KB"

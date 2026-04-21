@@ -22,6 +22,7 @@ fun SettingsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    var showDeleteDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -91,6 +92,46 @@ fun SettingsScreen(
                     leadingContent = { Icon(Icons.Default.Info, null) }
                 )
             }
+
+            item { SettingsSectionHeader("Danger Zone") }
+            item {
+                ListItem(
+                    headlineContent = { Text("Delete all chat history", color = MaterialTheme.colorScheme.error) },
+                    supportingContent = { Text("Irreversibly erase all captured chats, messages, and thumbnails from this device") },
+                    leadingContent = { Icon(Icons.Default.DeleteForever, null, tint = MaterialTheme.colorScheme.error) },
+                    trailingContent = {
+                        Button(
+                            onClick = { showDeleteDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) { Text("Delete") }
+                    }
+                )
+            }
+        }
+
+        if (showDeleteDialog) {
+            AlertDialog(
+                onDismissRequest = { showDeleteDialog = false },
+                icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                title = { Text("Erase all history?") },
+                text = { Text("Are you sure you want to delete all captured WhatsApp messages? This action cannot be undone and will wipe the local database completely.") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            viewModel.deleteAllHistory()
+                            showDeleteDialog = false
+                        },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Delete Everything")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
     }
 }
