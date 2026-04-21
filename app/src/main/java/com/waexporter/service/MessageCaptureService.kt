@@ -82,10 +82,12 @@ class MessageCaptureService : NotificationListenerService() {
         if (allMessages.isEmpty()) return
 
         // Resolve chat name: use conversation title, or fallback to the most recent sender for DMs
-        val resolvedChatName = style.conversationTitle?.toString() 
+        val rawChatName = style.conversationTitle?.toString() 
             ?: allMessages.last().person?.name?.toString() 
             ?: sbn.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.let { parseChatInfo(it, "").first }
             ?: "Unknown"
+
+        val resolvedChatName = cleanChatName(rawChatName)
 
         for (message in allMessages) {
             val text = message.text?.toString() ?: continue
@@ -236,6 +238,14 @@ class MessageCaptureService : NotificationListenerService() {
     }
 
     /**
+     * Cleans WhatsApp chat titles by removing the "(N messages)" suffix.
+     * WhatsApp often appends this to group titles in stacked notifications.
+     */
+    private fun cleanChatName(title: String): String {
+        return title.replace(Regex("""\s*\(\d+\s+[^)]+\)$"""), "").trim()
+    }
+
+    /**
      * Returns Triple(chatName, isGroup, senderName).
      *
      * WhatsApp notification formats:
@@ -259,7 +269,7 @@ class MessageCaptureService : NotificationListenerService() {
         }
 
         // Strip a bare count suffix like "GroupName (5 messages)" (no sender after it)
-        val cleanTitle = title.replace(Regex("""\s*\(\d+\s+[^)]+\)$"""), "").trim()
+        val cleanTitle = cleanChatName(title)
 
         // ── Format 2: single group ─ text starts with "Sender: …"
         val groupPattern = Regex("""^(.{1,50}):\s.+""")
