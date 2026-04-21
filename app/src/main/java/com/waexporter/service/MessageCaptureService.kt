@@ -70,12 +70,26 @@ class MessageCaptureService : NotificationListenerService() {
         val notifKey    = sbn.key
 
         // Parse sender and chat name.
-        // Individual chat  → title = "Contact Name"
-        // Group chat       → title = "Group Name", text starts with "Sender: message"
         val (chatName, isGroup, sender) = parseChatInfo(rawTitle, text)
 
-        // Determine the actual message body (prefer bigText for full content)
+        // ── Deletion detection ──────────────────────────────────────────────
+        // WhatsApp posts a notification when a sender deletes their message.
+        // The text will be "This message was deleted" (or locale-specific variant).
         val messageBody = bigText ?: text
+        if (isDeletionPhrase(messageBody) || isDeletionPhrase(text)) {
+            Log.d(TAG, "Deletion detected | chat=$chatName | sender=$sender")
+            serviceScope.launch {
+                repository.markDeletedBySender(chatName, sender)
+                deletionAlertNotifier.notifyDeleted(
+                    sender   = sender,
+                    chatName = chatName,
+                    preview  = "Message was deleted by sender"
+                )
+            }
+            return  // don't save the deletion notice as a message
+        }
+
+        // ── Normal message capture ──────────────────────────────────────────
 
         // Strip the "Sender: " prefix from group message body if present
         val cleanBody = if (isGroup && messageBody.startsWith("$sender: ")) {
@@ -115,25 +129,13 @@ class MessageCaptureService : NotificationListenerService() {
     ) {
         if (!isWhatsApp(sbn.packageName)) return
 
-        // REASON_APP_CANCEL (8) = the app explicitly cancelled the notification.
-        // WhatsApp does this when the user deletes a sent message.
+        // NOTE: REASON_APP_CANCEL fires both when WhatsApp deletes a message AND
+        // when the user simply reads a conversation. We cannot distinguish the two
+        // reliably, so we do NOT mark messages as deleted here.
+        // Deletion is detected in onNotificationPosted when WhatsApp sends
+        // a "This message was deleted" notification.
         if (reason == REASON_APP_CANCEL) {
-            val key = sbn.key
-            val extras = sbn.notification.extras
-            val rawTitle = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
-            val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
-            val (chatName, _, sender) = parseChatInfo(rawTitle, text)
-
-            Log.d(TAG, "Notification removed (app_cancel) key=$key — flagging as deleted")
-            serviceScope.launch {
-                repository.markDeleted(key)
-                // Fire a deletion alert push notification
-                deletionAlertNotifier.notifyDeleted(
-                    sender  = sender,
-                    chatName = chatName,
-                    preview  = text.take(120)
-                )
-            }
+            Log.d(TAG, "Notification removed (app_cancel) key=${sbn.key} — ignored (not a reliable deletion signal)")
         }
     }
 
@@ -141,6 +143,32 @@ class MessageCaptureService : NotificationListenerService() {
 
     private fun isWhatsApp(pkg: String) =
         pkg == WHATSAPP_PACKAGE || pkg == WHATSAPP_BUSINESS_PACKAGE
+
+    /**
+     * Checks if the notification text matches one of WhatsApp's
+     * "message deleted" phrases across common locales.
+     */
+    private fun isDeletionPhrase(text: String): Boolean {
+        val t = text.lowercase().trim()
+        return DELETION_PHRASES.any { t.contains(it) }
+    }
+
+    private companion object {
+        val DELETION_PHRASES = listOf(
+            "this message was deleted",              // English
+            "you deleted this message",             // English (self)
+            "se eliminó este mensaje",              // Spanish
+            "este mensaje fue eliminado",           // Spanish alt
+            "has eliminado este mensaje",           // Spanish (self)
+            "esta mensagem foi apagada",            // Portuguese
+            "diese nachricht wurde gelöscht",       // German
+            "ce message a été supprimé",            // French
+            "questo messaggio è stato eliminato",   // Italian
+            "esta mensagem foi eliminada",          // Portuguese (BR)
+            "berichten is verwijderd",              // Dutch
+            "mesaj silindi",                        // Turkish
+        )
+    }
 
     /**
      * Returns Triple(chatName, isGroup, senderName).

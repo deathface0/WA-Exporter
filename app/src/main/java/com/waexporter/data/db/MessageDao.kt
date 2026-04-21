@@ -45,6 +45,11 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE notificationKey = :key LIMIT 1")
     suspend fun getByNotificationKey(key: String): MessageEntity?
 
+    @Query("""SELECT * FROM messages
+        WHERE chatId = :chatId AND sender = :sender AND text = :text AND timestamp = :ts
+        LIMIT 1""")
+    suspend fun findDuplicate(chatId: Long, sender: String, text: String, ts: Long): MessageEntity?
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessage(message: MessageEntity): Long
 
@@ -53,6 +58,12 @@ interface MessageDao {
 
     @Query("UPDATE messages SET isDeleted = 1 WHERE notificationKey = :key")
     suspend fun markDeletedByKey(key: String)
+
+    @Query("""UPDATE messages SET isDeleted = 1
+        WHERE id = (SELECT id FROM messages
+                    WHERE chatId = :chatId AND sender = :sender AND isDeleted = 0
+                    ORDER BY timestamp DESC LIMIT 1)""")
+    suspend fun markLatestDeletedBySender(chatId: Long, sender: String): Int
 
     @Query("UPDATE messages SET isStarred = :starred WHERE id = :id")
     suspend fun setStarred(id: Long, starred: Boolean)

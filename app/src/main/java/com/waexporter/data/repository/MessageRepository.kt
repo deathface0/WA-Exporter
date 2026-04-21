@@ -80,11 +80,11 @@ class MessageRepository @Inject constructor(
             chatId = chat.id
         }
 
-        // Check dedup by notification key
-        if (notificationKey != null) {
-            val existing = messageDao.getByNotificationKey(notificationKey)
-            if (existing != null) return@withLock existing.id
-        }
+        // Content-based dedup: skip if we already have this exact message
+        // (protects against notification re-delivery without blocking new messages
+        //  in the same chat — WhatsApp reuses the same notification key per chat)
+        val duplicate = messageDao.findDuplicate(chatId, sender, text, timestamp)
+        if (duplicate != null) return@withLock duplicate.id
 
         // Build partial entity to get the auto-generated ID
         val partialEntity = MessageEntity(
@@ -121,6 +121,16 @@ class MessageRepository @Inject constructor(
         val message = messageDao.getByNotificationKey(notificationKey) ?: return
         messageDao.markDeletedByKey(notificationKey)
         chatDao.incrementDeletedCount(message.chatId)
+    }
+
+    /**
+     * Marks the latest non-deleted message from [sender] in [chatName] as deleted.
+     * Used when WhatsApp posts a "This message was deleted" notification.
+     */
+    suspend fun markDeletedBySender(chatName: String, sender: String) {
+        val chat = chatDao.getChatByName(chatName) ?: return
+        val affected = messageDao.markLatestDeletedBySender(chat.id, sender)
+        if (affected > 0) chatDao.incrementDeletedCount(chat.id)
     }
 
     suspend fun setStarred(messageId: Long, starred: Boolean) =
