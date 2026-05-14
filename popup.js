@@ -7,28 +7,120 @@ function formatLocalDatetime(date) {
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/* ── Default Date Range (now − 24h → now) ── */
+/* ── State & Storage ── */
 
-document.addEventListener('DOMContentLoaded', () => {
+let pollInterval = null;
+let cachedResult = null;
+
+document.addEventListener('DOMContentLoaded', async () => {
     const now = new Date();
     const yesterday = new Date(now.getTime() - 86_400_000);
 
-    $('startTime').value = formatLocalDatetime(yesterday);
-    $('endTime').value   = formatLocalDatetime(now);
+    let storage = {};
+    try {
+        storage = await browser.storage.local.get(['startTime', 'endTime', 'extractMode', 'messageCount']);
+    } catch(e) {}
+
+    $('startTime').value = storage.startTime || formatLocalDatetime(yesterday);
+    $('endTime').value   = storage.endTime || formatLocalDatetime(now);
+    if (storage.messageCount) $('messageCount').value = storage.messageCount;
+
+    if (storage.extractMode) {
+        const checkedRadio = document.querySelector(`input[name="extractMode"][value="${storage.extractMode}"]`);
+        if (checkedRadio) checkedRadio.checked = true;
+    }
+
+    const toggleInputs = () => {
+        const mode = document.querySelector('input[name="extractMode"]:checked').value;
+        if (mode === 'date') {
+            $('dateInputs').style.display = 'block';
+            $('countInput').style.display = 'none';
+        } else {
+            $('dateInputs').style.display = 'none';
+            $('countInput').style.display = 'block';
+        }
+    };
+    toggleInputs();
 
     const modeRadios = document.querySelectorAll('input[name="extractMode"]');
     modeRadios.forEach(r => {
         r.addEventListener('change', (e) => {
-            if (e.target.value === 'date') {
-                $('dateInputs').style.display = 'block';
-                $('countInput').style.display = 'none';
-            } else {
-                $('dateInputs').style.display = 'none';
-                $('countInput').style.display = 'block';
-            }
+            toggleInputs();
+            browser.storage.local.set({ extractMode: e.target.value });
+            clearCache();
         });
     });
+
+    $('startTime').addEventListener('change', (e) => { browser.storage.local.set({ startTime: e.target.value }); clearCache(); });
+    $('endTime').addEventListener('change', (e) => { browser.storage.local.set({ endTime: e.target.value }); clearCache(); });
+    $('messageCount').addEventListener('change', (e) => { browser.storage.local.set({ messageCount: e.target.value }); clearCache(); });
+
+    checkStatus();
 });
+
+function clearCache() {
+    cachedResult = null;
+    setStatus('', false);
+    resetButtons();
+    getActiveTab().then(tab => {
+        if (tab?.url?.includes('web.whatsapp.com')) {
+            browser.tabs.sendMessage(tab.id, { action: 'clear_result' }).catch(()=>{});
+        }
+    });
+}
+
+async function checkStatus() {
+    try {
+        const tab = await getActiveTab();
+        if (!tab?.url?.includes('web.whatsapp.com')) return;
+        
+        const status = await browser.tabs.sendMessage(tab.id, { action: 'get_status' }).catch(() => null);
+        if (status) {
+            updateUIFromStatus(status);
+            if (status.isRunning) {
+                if (!pollInterval) pollInterval = setInterval(checkStatus, 1000);
+            } else {
+                if (pollInterval) {
+                    clearInterval(pollInterval);
+                    pollInterval = null;
+                }
+            }
+        }
+    } catch(e) {}
+}
+
+function updateUIFromStatus(status) {
+    if (status.isRunning) {
+        $('copyBtn').disabled = true;
+        $('downloadBtn').disabled = true;
+        $('copyBtn').textContent = 'Extracting...';
+        
+        let msg = 'Fetcheando mensajes...';
+        if (status.mode === 'count') {
+            let remaining = Math.max(0, status.targetCount - status.fetchedCount);
+            msg = `Fetcheando: faltan ${remaining} mensajes...`;
+        } else if (status.mode === 'date') {
+            if (status.oldestTime) {
+                let d = new Date(status.oldestTime);
+                msg = `Fetcheando por fecha: vamos por ${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+            }
+        }
+        setStatus(msg, true);
+    } else if (status.result) {
+        cachedResult = status.result;
+        resetButtons();
+        setStatus(`¡Extracción completada! ${status.result.length} mensajes.`, false);
+    } else {
+        resetButtons();
+    }
+}
+
+function resetButtons() {
+    $('copyBtn').textContent = 'Copy Text';
+    $('downloadBtn').textContent = 'Download TXT';
+    $('copyBtn').disabled = false;
+    $('downloadBtn').disabled = false;
+}
 
 /* ── Tab & Extraction ── */
 
@@ -66,6 +158,11 @@ async function executeExtraction() {
     await browser.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
 
     const response = await browser.tabs.sendMessage(tab.id, messagePayload);
+
+    if (response?.error) {
+        console.warn(response.error);
+        return null;
+    }
 
     return response?.data ?? null;
 }
@@ -120,29 +217,68 @@ function setStatus(msg, showSpinner = false) {
     }
 }
 
+function getFilename() {
+    const mode = document.querySelector('input[name="extractMode"]:checked').value;
+    const ts = Date.now();
+    if (mode === 'date') {
+        const start = $('startTime').value.split('T')[0];
+        const end = $('endTime').value.split('T')[0];
+        return `WA_Chat_${start}_to_${end}_${ts}.txt`;
+    } else {
+        const count = $('messageCount').value;
+        return `WA_Chat_${count}_msgs_${ts}.txt`;
+    }
+}
+
 async function handleAction(action, btn) {
-    const original = btn.textContent;
+    if (cachedResult) {
+        const text = formatData(cachedResult);
+        if (action === 'copy') {
+            await copyToClipboard(text);
+            btn.textContent = 'Copied!';
+        } else {
+            downloadTxt(getFilename(), text);
+            btn.textContent = 'Downloaded!';
+        }
+        setTimeout(() => resetButtons(), 3000);
+        return;
+    }
+
     btn.textContent = 'Extracting...';
-    btn.disabled = true;
+    $('copyBtn').disabled = true;
+    $('downloadBtn').disabled = true;
     setStatus('Fetching messages...', true);
+
+    if (!pollInterval) pollInterval = setInterval(checkStatus, 1000);
 
     try {
         const data = await executeExtraction();
 
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+
+        if (data === null) {
+            resetButtons();
+            return; // Error handled by executeExtraction
+        }
+
         if (!data?.length) {
             btn.textContent = 'No data';
             setStatus('No messages found within this range.', false);
-            setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 3000);
+            setTimeout(() => resetButtons(), 3000);
             return;
         }
 
+        cachedResult = data;
         const text = formatData(data);
 
         if (action === 'copy') {
             await copyToClipboard(text);
             btn.textContent = 'Copied!';
         } else {
-            downloadTxt(`WA_Chat_${Date.now()}.txt`, text);
+            downloadTxt(getFilename(), text);
             btn.textContent = 'Downloaded!';
         }
 
@@ -153,7 +289,7 @@ async function handleAction(action, btn) {
         setStatus('An error occurred during extraction.', false);
     }
 
-    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 3000);
+    setTimeout(() => resetButtons(), 3000);
 }
 
 /* ── Event Bindings ── */

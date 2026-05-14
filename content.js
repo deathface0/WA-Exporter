@@ -9,9 +9,42 @@ if (!window.waExporterInjected) {
         metadata: '[data-pre-plain-text]'
     };
 
+    window.waExtractionState = {
+        isRunning: false,
+        mode: null,
+        targetCount: 0,
+        fetchedCount: 0,
+        oldestTime: null,
+        result: null
+    };
+
     browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request.action === "get_status") {
+            sendResponse(window.waExtractionState);
+            return true;
+        }
+        if (request.action === "clear_result") {
+            window.waExtractionState.result = null;
+            sendResponse({ success: true });
+            return true;
+        }
         if (request.action === "extract_chat") {
-            runExtraction(request).then(data => sendResponse({ data }));
+            if (window.waExtractionState.isRunning) {
+                sendResponse({ data: null, error: "Ya hay una extracción en curso." });
+                return true;
+            }
+            window.waExtractionState.isRunning = true;
+            window.waExtractionState.mode = request.mode;
+            window.waExtractionState.targetCount = request.count || 0;
+            window.waExtractionState.fetchedCount = 0;
+            window.waExtractionState.oldestTime = null;
+            window.waExtractionState.result = null;
+
+            runExtraction(request).then(data => {
+                window.waExtractionState.isRunning = false;
+                window.waExtractionState.result = data;
+                sendResponse({ data });
+            });
             return true;
         }
     });
@@ -423,7 +456,7 @@ if (!window.waExporterInjected) {
 
                 if (oldestSignature === lastSignature && oldestSignature !== "") {
                     stagnateCount++;
-                    if (stagnateCount > 4) {
+                    if (stagnateCount > 10) {
                         fetching = false;
                         break;
                     }
@@ -433,6 +466,9 @@ if (!window.waExporterInjected) {
                 }
 
                 if (fetching) {
+                    window.waExtractionState.fetchedCount = extractedMessagesMap.size;
+                    window.waExtractionState.oldestTime = oldestTime;
+
                     if (oldestActualNode) {
                         oldestActualNode.scrollIntoView({ behavior: 'instant', block: 'start' });
                     }
@@ -453,11 +489,11 @@ if (!window.waExporterInjected) {
 
         let result = Array.from(extractedMessagesMap.values())
             .sort((a, b) => a.timestamp - b.timestamp);
-            
+
         if (mode === 'count') {
             result = result.slice(-targetCount);
         }
-        
+
         return result;
     }
 
