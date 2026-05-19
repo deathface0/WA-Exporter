@@ -14,7 +14,7 @@
             --brand-hover: #019071;
             --border-color: #d1d7db;
             --shadow: 0 2px 4px rgba(0,0,0,0.08);
-            
+
             --btn-copy: #34B7F1;
             --btn-copy-hover: #2ba4de;
             --btn-download: #25D366;
@@ -45,11 +45,47 @@
         }
 
         h3 {
-            margin-bottom: 16px;
+            margin-bottom: 12px;
             text-align: left;
             font-size: 16px;
             font-weight: 600;
         }
+
+        /* ── Chat Insight ── */
+
+        #chatInsight {
+            padding: 10px 12px;
+            border-radius: 8px;
+            margin-bottom: 14px;
+            font-size: 13px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: background 0.3s, color 0.3s;
+        }
+
+        #chatInsight.ready {
+            background: rgba(0, 168, 132, 0.12);
+            color: var(--brand-color);
+        }
+
+        #chatInsight.warning {
+            background: rgba(234, 67, 53, 0.12);
+            color: #ea4335;
+        }
+
+        #chatInsight.loading {
+            background: var(--surface-color);
+            color: var(--text-secondary);
+        }
+
+        #chatInsight .insight-icon {
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+
+        /* ── Segmented Control ── */
 
         .segmented-control {
             display: flex;
@@ -74,9 +110,9 @@
         .segmented-control .pill {
             display: block;
             text-align: center;
-            padding: 8px 12px;
+            padding: 8px 8px;
             border-radius: 6px;
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 600;
             color: var(--text-secondary);
             transition: color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
@@ -87,6 +123,8 @@
             background: var(--surface-color);
             box-shadow: var(--shadow);
         }
+
+        /* ── Cards & Inputs ── */
 
         .card {
             background: var(--surface-color);
@@ -130,6 +168,8 @@
             box-shadow: 0 0 0 2px rgba(0, 168, 132, 0.2);
         }
 
+        /* ── Buttons ── */
+
         .btn-group {
             display: flex;
             gap: 8px;
@@ -150,7 +190,7 @@
         button:active:not(:disabled) {
             transform: scale(0.97);
         }
-        
+
         button:disabled {
             opacity: 0.6;
             cursor: not-allowed;
@@ -158,9 +198,11 @@
 
         #copyBtn { background: var(--btn-copy); }
         #copyBtn:hover:not(:disabled) { background: var(--btn-copy-hover); }
-        
+
         #downloadBtn { background: var(--btn-download); }
         #downloadBtn:hover:not(:disabled) { background: var(--btn-download-hover); }
+
+        /* ── Status ── */
 
         .status-container {
             margin-top: 16px;
@@ -200,20 +242,39 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+
+        /* ── Disclaimer ── */
+
+        .note {
+            margin-top: 14px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+            text-align: center;
+        }
     </style>
 </head>
 
 <body>
     <h3>Chat Exporter</h3>
 
+    <div id="chatInsight" class="loading">
+        <span class="insight-icon">⏳</span>
+        <span id="insightText">Detecting chat…</span>
+    </div>
+
     <div class="segmented-control">
         <label>
             <input type="radio" name="extractMode" value="date" checked>
-            <span class="pill">By Date Range</span>
+            <span class="pill">Date Range</span>
         </label>
         <label>
             <input type="radio" name="extractMode" value="count">
             <span class="pill">By Count</span>
+        </label>
+        <label>
+            <input type="radio" name="extractMode" value="all">
+            <span class="pill">All Cached</span>
         </label>
     </div>
 
@@ -237,14 +298,19 @@
     </div>
 
     <div class="btn-group">
-        <button id="copyBtn">Copy Text</button>
-        <button id="downloadBtn">Download TXT</button>
+        <button id="copyBtn" disabled>Copy Text</button>
+        <button id="downloadBtn" disabled>Download TXT</button>
     </div>
 
     <div class="status-container" id="statusContainer">
         <div class="spinner" id="spinner"></div>
         <p id="statusMsg"></p>
     </div>
+
+    <p class="note">
+        Note: Extracts messages currently synced to this browser.
+        To extract older messages, scroll up in the WhatsApp UI to load them first.
+    </p>
 
     <script src="popup.js"></script>
 </body>

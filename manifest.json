@@ -8,7 +8,8 @@
     "permissions": [
         "activeTab",
         "scripting",
-        "clipboardWrite"
+        "clipboardWrite",
+        "storage"
     ],
     "host_permissions": [
         "*://web.whatsapp.com/*"

@@ -7,163 +7,124 @@ function formatLocalDatetime(date) {
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/* ── State & Storage ── */
-
-let pollInterval = null;
-let cachedResult = null;
+/* ── Init ── */
 
 document.addEventListener('DOMContentLoaded', async () => {
-    const now = new Date();
+    const now       = new Date();
     const yesterday = new Date(now.getTime() - 86_400_000);
 
+    // Restore persisted inputs
     let storage = {};
-    try {
-        storage = await browser.storage.local.get(['startTime', 'endTime', 'extractMode', 'messageCount']);
-    } catch(e) {}
+    try { storage = await browser.storage.local.get(['startTime', 'endTime', 'extractMode', 'messageCount']); } catch {}
 
-    $('startTime').value = storage.startTime || formatLocalDatetime(yesterday);
-    $('endTime').value   = storage.endTime || formatLocalDatetime(now);
+    $('startTime').value    = storage.startTime || formatLocalDatetime(yesterday);
+    $('endTime').value      = storage.endTime   || formatLocalDatetime(now);
     if (storage.messageCount) $('messageCount').value = storage.messageCount;
 
     if (storage.extractMode) {
-        const checkedRadio = document.querySelector(`input[name="extractMode"][value="${storage.extractMode}"]`);
-        if (checkedRadio) checkedRadio.checked = true;
+        const r = document.querySelector(`input[name="extractMode"][value="${storage.extractMode}"]`);
+        if (r) r.checked = true;
     }
 
-    const toggleInputs = () => {
-        const mode = document.querySelector('input[name="extractMode"]:checked').value;
-        if (mode === 'date') {
-            $('dateInputs').style.display = 'block';
-            $('countInput').style.display = 'none';
-        } else {
-            $('dateInputs').style.display = 'none';
-            $('countInput').style.display = 'block';
-        }
-    };
     toggleInputs();
 
-    const modeRadios = document.querySelectorAll('input[name="extractMode"]');
-    modeRadios.forEach(r => {
+    // Persist on change
+    document.querySelectorAll('input[name="extractMode"]').forEach(r => {
         r.addEventListener('change', (e) => {
-            toggleInputs();
             browser.storage.local.set({ extractMode: e.target.value });
-            clearCache();
+            toggleInputs();
         });
     });
+    $('startTime').addEventListener('change',    (e) => browser.storage.local.set({ startTime: e.target.value }));
+    $('endTime').addEventListener('change',      (e) => browser.storage.local.set({ endTime: e.target.value }));
+    $('messageCount').addEventListener('change', (e) => browser.storage.local.set({ messageCount: e.target.value }));
 
-    $('startTime').addEventListener('change', (e) => { browser.storage.local.set({ startTime: e.target.value }); clearCache(); });
-    $('endTime').addEventListener('change', (e) => { browser.storage.local.set({ endTime: e.target.value }); clearCache(); });
-    $('messageCount').addEventListener('change', (e) => { browser.storage.local.set({ messageCount: e.target.value }); clearCache(); });
-
-    checkStatus();
+    // Probe the active chat
+    await probeChatInfo();
 });
 
-function clearCache() {
-    cachedResult = null;
-    setStatus('', false);
-    resetButtons();
-    getActiveTab().then(tab => {
-        if (tab?.url?.includes('web.whatsapp.com')) {
-            browser.tabs.sendMessage(tab.id, { action: 'clear_result' }).catch(()=>{});
-        }
-    });
+function toggleInputs() {
+    const mode = document.querySelector('input[name="extractMode"]:checked').value;
+    $('dateInputs').style.display = mode === 'date'  ? 'block' : 'none';
+    $('countInput').style.display = mode === 'count' ? 'block' : 'none';
 }
 
-async function checkStatus() {
+/* ── Chat Insight ── */
+
+async function probeChatInfo() {
+    const insight     = $('chatInsight');
+    const insightText = $('insightText');
+
+    insight.className = 'loading';
+    insightText.textContent = 'Detecting chat…';
+    insight.querySelector('.insight-icon').textContent = '⏳';
+
     try {
         const tab = await getActiveTab();
-        if (!tab?.url?.includes('web.whatsapp.com')) return;
-        
-        const status = await browser.tabs.sendMessage(tab.id, { action: 'get_status' }).catch(() => null);
-        if (status) {
-            updateUIFromStatus(status);
-            if (status.isRunning) {
-                if (!pollInterval) pollInterval = setInterval(checkStatus, 1000);
-            } else {
-                if (pollInterval) {
-                    clearInterval(pollInterval);
-                    pollInterval = null;
-                }
-            }
+        if (!tab?.url?.includes('web.whatsapp.com')) {
+            showInsight('warning', '⚠️', 'Navigate to WhatsApp Web first.');
+            return;
         }
-    } catch(e) {}
-}
 
-function updateUIFromStatus(status) {
-    if (status.isRunning) {
-        $('copyBtn').disabled = true;
-        $('downloadBtn').disabled = true;
-        $('copyBtn').textContent = 'Extracting...';
-        
-        let msg = 'Fetcheando mensajes...';
-        if (status.mode === 'count') {
-            let remaining = Math.max(0, status.targetCount - status.fetchedCount);
-            msg = `Fetcheando: faltan ${remaining} mensajes...`;
-        } else if (status.mode === 'date') {
-            if (status.oldestTime) {
-                let d = new Date(status.oldestTime);
-                msg = `Fetcheando por fecha: vamos por ${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-            }
+        await browser.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+        const info = await browser.tabs.sendMessage(tab.id, { action: 'get_chat_info' });
+
+        if (!info?.chatId) {
+            showInsight('warning', '💬', 'Open a chat in WhatsApp Web.');
+            return;
         }
-        setStatus(msg, true);
-    } else if (status.result) {
-        cachedResult = status.result;
-        resetButtons();
-        setStatus(`¡Extracción completada! ${status.result.length} mensajes.`, false);
-    } else {
-        resetButtons();
+
+        showInsight('ready', '✅', `Ready — ${info.totalMessages.toLocaleString()} messages cached`);
+        $('copyBtn').disabled     = false;
+        $('downloadBtn').disabled = false;
+    } catch (err) {
+        console.error(err);
+        showInsight('warning', '❌', 'Could not connect to WhatsApp Web.');
     }
 }
 
-function resetButtons() {
-    $('copyBtn').textContent = 'Copy Text';
-    $('downloadBtn').textContent = 'Download TXT';
-    $('copyBtn').disabled = false;
-    $('downloadBtn').disabled = false;
+function showInsight(cls, icon, text) {
+    const el = $('chatInsight');
+    el.className = cls;
+    el.querySelector('.insight-icon').textContent = icon;
+    $('insightText').textContent = text;
 }
 
-/* ── Tab & Extraction ── */
+/* ── Tab ── */
 
 async function getActiveTab() {
     const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
     return tab;
 }
 
+/* ── Extraction ── */
+
 async function executeExtraction() {
     const mode = document.querySelector('input[name="extractMode"]:checked').value;
-    let messagePayload = { action: 'extract_chat', mode: mode };
+    const payload = { action: 'extract_chat', mode };
 
     if (mode === 'date') {
         const startVal = $('startTime').value;
         const endVal   = $('endTime').value;
-
-        if (!startVal || !endVal) { alert('Missing timestamps.'); return null; }
-
+        if (!startVal || !endVal)                     { alert('Missing timestamps.');        return null; }
         const startTime = new Date(startVal).getTime();
         const endTime   = new Date(endVal).getTime();
-
-        if (startTime > endTime) { alert('Start must be before end.'); return null; }
-        
-        messagePayload.start = startTime;
-        messagePayload.end = endTime;
-    } else {
+        if (startTime > endTime)                      { alert('Start must be before end.');  return null; }
+        payload.start = startTime;
+        payload.end   = endTime;
+    } else if (mode === 'count') {
         const count = parseInt($('messageCount').value, 10);
-        if (!count || count <= 0) { alert('Invalid message count.'); return null; }
-        messagePayload.count = count;
+        if (!count || count <= 0)                     { alert('Invalid message count.');     return null; }
+        payload.count = count;
     }
 
     const tab = await getActiveTab();
-    if (!tab?.url?.includes('web.whatsapp.com')) { alert('Navigate to WhatsApp Web.'); return null; }
+    if (!tab?.url?.includes('web.whatsapp.com'))      { alert('Navigate to WhatsApp Web.'); return null; }
 
     await browser.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+    const response = await browser.tabs.sendMessage(tab.id, payload);
 
-    const response = await browser.tabs.sendMessage(tab.id, messagePayload);
-
-    if (response?.error) {
-        console.warn(response.error);
-        return null;
-    }
-
+    if (response?.error) { console.warn(response.error); alert(response.error); return null; }
     return response?.data ?? null;
 }
 
@@ -187,91 +148,69 @@ async function copyToClipboard(text) {
 
 function downloadTxt(filename, text) {
     const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
-    const a = Object.assign(document.createElement('a'), { href: url, download: filename });
+    const a   = Object.assign(document.createElement('a'), { href: url, download: filename });
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
 }
 
-/* ── Action Handler ── */
+function getFilename() {
+    const mode = document.querySelector('input[name="extractMode"]:checked').value;
+    const ts   = Date.now();
+    if (mode === 'date') {
+        const start = $('startTime').value.split('T')[0];
+        const end   = $('endTime').value.split('T')[0];
+        return `WA_Chat_${start}_to_${end}_${ts}.txt`;
+    } else if (mode === 'count') {
+        return `WA_Chat_${$('messageCount').value}_msgs_${ts}.txt`;
+    }
+    return `WA_Chat_all_${ts}.txt`;
+}
+
+/* ── Status ── */
 
 function setStatus(msg, showSpinner = false) {
     const container = $('statusContainer');
-    const msgEl = $('statusMsg');
-    const spinner = $('spinner');
-
     if (!container) return;
 
     if (msg) {
-        msgEl.textContent = msg;
+        $('statusMsg').textContent = msg;
         container.classList.add('visible');
     } else {
         container.classList.remove('visible');
     }
 
-    if (showSpinner) {
-        spinner.classList.add('active');
-    } else {
-        spinner.classList.remove('active');
-    }
+    $('spinner').classList.toggle('active', showSpinner);
 }
 
-function getFilename() {
-    const mode = document.querySelector('input[name="extractMode"]:checked').value;
-    const ts = Date.now();
-    if (mode === 'date') {
-        const start = $('startTime').value.split('T')[0];
-        const end = $('endTime').value.split('T')[0];
-        return `WA_Chat_${start}_to_${end}_${ts}.txt`;
-    } else {
-        const count = $('messageCount').value;
-        return `WA_Chat_${count}_msgs_${ts}.txt`;
-    }
-}
+/* ── Action Handler ── */
 
 async function handleAction(action, btn) {
-    if (cachedResult) {
-        const text = formatData(cachedResult);
-        if (action === 'copy') {
-            await copyToClipboard(text);
-            btn.textContent = 'Copied!';
-        } else {
-            downloadTxt(getFilename(), text);
-            btn.textContent = 'Downloaded!';
-        }
-        setTimeout(() => resetButtons(), 3000);
-        return;
-    }
-
-    btn.textContent = 'Extracting...';
-    $('copyBtn').disabled = true;
+    const original = btn.textContent;
+    btn.textContent       = 'Extracting…';
+    $('copyBtn').disabled     = true;
     $('downloadBtn').disabled = true;
-    setStatus('Fetching messages...', true);
-
-    if (!pollInterval) pollInterval = setInterval(checkStatus, 1000);
+    setStatus('Querying local database…', true);
 
     try {
         const data = await executeExtraction();
 
-        if (pollInterval) {
-            clearInterval(pollInterval);
-            pollInterval = null;
-        }
-
         if (data === null) {
-            resetButtons();
-            return; // Error handled by executeExtraction
-        }
-
-        if (!data?.length) {
-            btn.textContent = 'No data';
-            setStatus('No messages found within this range.', false);
-            setTimeout(() => resetButtons(), 3000);
+            btn.textContent = original;
+            $('copyBtn').disabled     = false;
+            $('downloadBtn').disabled = false;
+            setStatus('');
             return;
         }
 
-        cachedResult = data;
+        if (!data.length) {
+            btn.textContent = 'No data';
+            setStatus('No messages found for the selected filter.', false);
+            setTimeout(() => { btn.textContent = original; $('copyBtn').disabled = false; $('downloadBtn').disabled = false; }, 3000);
+            return;
+        }
+
         const text = formatData(data);
 
         if (action === 'copy') {
@@ -282,17 +221,21 @@ async function handleAction(action, btn) {
             btn.textContent = 'Downloaded!';
         }
 
-        setStatus(`Successfully fetched ${data.length} message(s)!`, false);
+        setStatus(`Done — ${data.length.toLocaleString()} message(s) exported.`, false);
     } catch (err) {
         console.error(err);
         btn.textContent = 'Error';
         setStatus('An error occurred during extraction.', false);
     }
 
-    setTimeout(() => resetButtons(), 3000);
+    setTimeout(() => {
+        btn.textContent = original;
+        $('copyBtn').disabled     = false;
+        $('downloadBtn').disabled = false;
+    }, 3000);
 }
 
 /* ── Event Bindings ── */
 
-$('copyBtn').addEventListener('click',    (e) => handleAction('copy', e.target));
+$('copyBtn').addEventListener('click',     (e) => handleAction('copy', e.target));
 $('downloadBtn').addEventListener('click', (e) => handleAction('download', e.target));
