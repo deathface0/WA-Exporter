@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <title>WA Web Chat Exporter</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <div class="header">
+        <h3><span>💬</span> WA Chat Exporter</h3>
+        <span class="version-badge">v2.0</span>
+    </div>
+
+    <!-- Chat insight badge -->
+    <div id="chatInsight" class="loading">
+        <span class="insight-icon">⏳</span>
+        <div class="insight-details">
+            <div id="chatNameBadge" class="chat-name-badge" style="display: none;">
+                <span class="chat-label">Chat:</span>
+                <span id="activeChatName" class="chat-title-text"></span>
+            </div>
+            <span id="insightText">Detecting chat…</span>
+        </div>
+    </div>
+
+    <!-- Extraction range mode -->
+    <span class="section-label">Extraction Scope</span>
+    <div class="segmented-control">
+        <label>
+            <input type="radio" name="extractMode" value="date" checked>
+            <span class="pill">Date Range</span>
+        </label>
+        <label>
+            <input type="radio" name="extractMode" value="count">
+            <span class="pill">By Count</span>
+        </label>
+        <label>
+            <input type="radio" name="extractMode" value="all">
+            <span class="pill">All Cached</span>
+        </label>
+    </div>
+
+    <!-- Date range inputs -->
+    <div class="card" id="dateInputs">
+        <div class="input-group">
+            <label class="field-label" for="startTime">Start Date & Time</label>
+            <input type="datetime-local" id="startTime">
+        </div>
+
+        <div class="input-group">
+            <label class="field-label" for="endTime">End Date & Time</label>
+            <input type="datetime-local" id="endTime">
+        </div>
+    </div>
+
+    <!-- Message count input -->
+    <div class="card" id="countInput" style="display: none;">
+        <div class="input-group">
+            <label class="field-label" for="messageCount">Number of Messages</label>
+            <input type="number" id="messageCount" value="100" min="1" step="10">
+        </div>
+    </div>
+
+    <!-- Export format selector -->
+    <span class="section-label">Export Format</span>
+    <div class="segmented-control" id="formatControl">
+        <label>
+            <input type="radio" name="exportFormat" value="txt" checked>
+            <span class="pill">TXT</span>
+        </label>
+        <label>
+            <input type="radio" name="exportFormat" value="json">
+            <span class="pill">JSON</span>
+        </label>
+        <label>
+            <input type="radio" name="exportFormat" value="csv">
+            <span class="pill">CSV</span>
+        </label>
+    </div>
+
+    <!-- Progress indicator -->
+    <div id="progressContainer" class="progress-container">
+        <div class="progress-bar-track">
+            <div id="progressBarFill" class="progress-bar-fill indeterminate"></div>
+        </div>
+        <div class="progress-text">
+            <span id="progressPhaseText">Extracting...</span>
+            <span id="progressCountText">0 messages</span>
+        </div>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="btn-group">
+        <button id="copyBtn" disabled>
+            <span>📋</span> Copy Text
+        </button>
+        <button id="downloadBtn" disabled>
+            <span>💾</span> Download
+        </button>
+    </div>
+
+    <!-- Cancel button (active during extraction) -->
+    <button id="cancelBtn" class="cancel-btn" style="display: none;">
+        <span>⏹</span> Cancel Extraction
+    </button>
+
+    <!-- Status message -->
+    <div class="status-container" id="statusContainer">
+        <div class="spinner" id="spinner"></div>
+        <p id="statusMsg"></p>
+    </div>
+
+    <p class="note">
+        Exports messages directly from local database with automatic DOM scroll fallback.
+    </p>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,12 @@
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Local development configs
+local.properties
+*.log
+
+# IDE files
+.idea/
+.vscode/
+*.swp
