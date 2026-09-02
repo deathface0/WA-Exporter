@@ -322,6 +322,7 @@
 
         // Initial scan
         scanVisibleMessages(messageMap, contextState);
+        await sleep(50); // Allow async thumbnail fetches to resolve before scrolling
         lastSize = messageMap.size;
         reportProgress('scrolling');
         console.log(`👀 Initial scan in viewport: %c${messageMap.size} messages found.`, 'color: #25d366;');

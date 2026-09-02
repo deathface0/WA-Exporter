@@ -1,57 +1,42 @@
 :root {
-    color-scheme: light dark;
-    --bg-color: #f0f2f5;
-    --surface-color: #ffffff;
-    --text-primary: #111b21;
-    --text-secondary: #667781;
+    color-scheme: dark;
+    --bg-color: #0b141a;
+    --surface-color: #111b21;
+    --surface-hover: #202c33;
+    --text-primary: #e9edef;
+    --text-secondary: #8696a0;
     --brand-color: #00a884;
     --brand-hover: #019071;
-    --brand-tint: rgba(0, 168, 132, 0.12);
-    --border-color: #d1d7db;
+    --brand-tint: rgba(0, 168, 132, 0.15);
+    --border-color: #2a3942;
     --border-focus: #00a884;
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
-    --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.12);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.5);
 
-    --btn-copy: #027eb5;
-    --btn-copy-hover: #016a9a;
+    --btn-copy: #34b7f1;
+    --btn-copy-hover: #2ba4de;
     --btn-download: #00a884;
     --btn-download-hover: #019071;
-    --btn-cancel: #ea4335;
-    --btn-cancel-hover: #d33426;
+    --btn-cancel: #f28b82;
+    --btn-cancel-hover: #e57373;
 
-    --warning-bg: rgba(234, 67, 53, 0.12);
-    --warning-color: #d93025;
-    --info-bg: rgba(2, 126, 181, 0.12);
-    --info-color: #027eb5;
+    --warning-bg: rgba(234, 67, 53, 0.2);
+    --warning-color: #f28b82;
+    --info-bg: rgba(138, 43, 226, 0.15);
+    --info-color: #a461f8; /* Gemini Purple */
 }
 
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg-color: #111b21;
-        --surface-color: #202c33;
-        --text-primary: #e9edef;
-        --text-secondary: #8696a0;
-        --brand-color: #00a884;
-        --brand-hover: #019071;
-        --brand-tint: rgba(0, 168, 132, 0.15);
-        --border-color: #2a3942;
-        --border-focus: #00a884;
-        --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
-        --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.4);
-
-        --btn-copy: #34b7f1;
-        --btn-copy-hover: #2ba4de;
-        --btn-download: #00a884;
-        --btn-download-hover: #019071;
-        --btn-cancel: #f28b82;
-        --btn-cancel-hover: #e57373;
-
-        --warning-bg: rgba(234, 67, 53, 0.2);
-        --warning-color: #f28b82;
-        --info-bg: rgba(52, 183, 241, 0.2);
-        --info-color: #70c9f3;
-    }
+@keyframes pulse-glow {
+    0% { box-shadow: 0 0 0 0 rgba(164, 97, 248, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(164, 97, 248, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(164, 97, 248, 0); }
 }
+
+.model-badge.pulsing {
+    animation: pulse-glow 1.5s ease-out 3;
+    border-color: var(--info-color);
+}
+
 
 * {
     box-sizing: border-box;

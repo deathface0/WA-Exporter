@@ -252,6 +252,9 @@
 
         // 1. Thumbnail Capture Pipeline (needed for thumbnail export or AI vision captioning)
         if (shouldCaptureThumbnails || shouldRunAi) {
+            // Count how many were already captured eagerly by parsers (inline canvas or async fetch)
+            const earlyCaptured = messages.filter(m => m && m.thumbnail && ['image', 'video', 'gif', 'sticker'].includes(m.type)).length;
+
             const mediaItems = [];
             messages.forEach((m, idx) => {
                 if (m && m.blobUrl && ['image', 'video', 'gif', 'sticker'].includes(m.type) && !m.thumbnail) {
@@ -260,25 +263,40 @@
             });
 
             if (mediaItems.length > 0) {
-                console.log(`[WA-Exporter] 🖼️ Capturing thumbnails for ${mediaItems.length} media items...`);
+                console.log(`[WA-Exporter] 🖼️ ${earlyCaptured} thumbnails captured eagerly. Late-capturing ${mediaItems.length} remaining...`);
                 broadcastProgress(mediaItems.length, 'capturing_thumbnails', 'dom');
 
                 const maxSize = parseInt(request.thumbnailSize, 10) || 160;
 
-                // Direct instant canvas rendering for all items
                 await Promise.all(mediaItems.map(async (item) => {
                     const m = messages[item.key];
                     if (m && !m.thumbnail && item.blobUrl) {
                         try {
-                            const dataUri = await renderCanvasThumbnail(item.blobUrl, maxSize);
-                            if (dataUri) m.thumbnail = dataUri;
-                        } catch (err) { }
+                            // Try fetch first (works even if Image() constructor would fail on revoked URLs)
+                            const blob = await fetch(item.blobUrl).then(r => r.blob());
+                            const localUrl = URL.createObjectURL(blob);
+                            try {
+                                const dataUri = await renderCanvasThumbnail(localUrl, maxSize);
+                                if (dataUri) m.thumbnail = dataUri;
+                            } finally {
+                                URL.revokeObjectURL(localUrl);
+                            }
+                        } catch (fetchErr) {
+                            // fetch failed (blob revoked), try direct Image as last resort
+                            try {
+                                const dataUri = await renderCanvasThumbnail(item.blobUrl, maxSize);
+                                if (dataUri) m.thumbnail = dataUri;
+                            } catch (err) { }
+                        }
                     }
                 }));
-
-                const capturedCount = messages.filter(m => m && m.thumbnail).length;
-                console.log(`[WA-Exporter] 🖼️ Successfully captured ${capturedCount} thumbnails.`);
+            } else if (earlyCaptured > 0) {
+                console.log(`[WA-Exporter] 🖼️ All ${earlyCaptured} thumbnails were captured eagerly by parsers. No late capture needed.`);
             }
+
+            const totalCaptured = messages.filter(m => m && m.thumbnail).length;
+            const totalMedia = messages.filter(m => m && ['image', 'video', 'gif', 'sticker'].includes(m.type)).length;
+            console.log(`[WA-Exporter] 🖼️ Successfully captured ${totalCaptured}/${totalMedia} thumbnails.`);
         }
 
         // 2. Gemini AI Captioning Pipeline

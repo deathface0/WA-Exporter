@@ -14,10 +14,12 @@
             if (node.nodeType === Node.TEXT_NODE) {
                 text += node.textContent;
             } else if (node.nodeType === Node.ELEMENT_NODE) {
+                // Ignore SVG icons and data-icon spans which contain hidden UI text like "ic-imagePhoto" or "ic-keyboard-voice-filled"
+                if (node.tagName === 'SVG' || node.hasAttribute('data-icon')) {
+                    return;
+                }
                 if (node.tagName === 'IMG' && node.alt) {
                     text += node.alt;
-                } else if (node.classList && (node.classList.contains('copyable-text') || node.classList.contains('selectable-text'))) {
-                    text += extractTextWithEmojis(node);
                 } else {
                     text += extractTextWithEmojis(node);
                 }
@@ -302,6 +304,61 @@
             /^(?:online|en línea|typing|escribiendo|recording audio|grabando audio|click here for group info|haz clic aquí para ver la información del grupo|group info|info\. del grupo)$/i.test(lower);
     }
 
+    function attachThumbnail(parsedData, mediaElement, blobUrl, maxSize = 160) {
+        if (!mediaElement && !blobUrl) return;
+
+        const extractAndSet = (el) => {
+            try {
+                let width = el.naturalWidth || el.videoWidth || el.width || el.clientWidth;
+                let height = el.naturalHeight || el.videoHeight || el.height || el.clientHeight;
+                if (!width || !height) return false;
+
+                if (width > height) {
+                    if (width > maxSize) {
+                        height = Math.round((height * maxSize) / width);
+                        width = maxSize;
+                    }
+                } else {
+                    if (height > maxSize) {
+                        width = Math.round((width * maxSize) / height);
+                        height = maxSize;
+                    }
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(el, 0, 0, width, height);
+                parsedData.thumbnail = canvas.toDataURL('image/jpeg', 0.8);
+                return true;
+            } catch (e) {
+                return false;
+            }
+        };
+
+        // 1. Try synchronous capture if already loaded in the DOM
+        if (mediaElement && extractAndSet(mediaElement)) return;
+
+        // 2. If not loaded (width/height 0), fetch the blob immediately before WhatsApp revokes it
+        if (blobUrl) {
+            fetch(blobUrl)
+                .then(res => res.blob())
+                .then(blob => {
+                    const img = new Image();
+                    img.onload = () => {
+                        extractAndSet(img);
+                        URL.revokeObjectURL(img.src);
+                    };
+                    img.src = URL.createObjectURL(blob);
+                })
+                .catch(() => {});
+        }
+    }
+
+    /**
+     * Internal generic tools for parsing messages
+     */
     function extractSender(msgEl, prePlain, myName) {
         const outgoing = isOutgoingMessage(msgEl);
 
@@ -367,6 +424,8 @@
             mediaTag = '[Sticker]';
         } else if (quotedEl.querySelector(SELECTORS.mediaContact || '[data-testid="vcard"]')) {
             mediaTag = '[Contact]';
+        } else if (quotedEl.querySelector('[data-icon*="view-once"]')) {
+            mediaTag = '[View Once Message]';
         }
 
         // 4. Extract text from clone (or link)
@@ -377,7 +436,24 @@
             text = text.slice(sender.length).trim();
         }
 
+        if (!mediaTag) {
+            if (/ic-keyboard-voice|Voice message|Mensaje de voz/i.test(text)) mediaTag = '[Voice Note]';
+            else if (/ic-imagePhoto/i.test(text)) mediaTag = '[Image]';
+            else if (/ic-video/i.test(text)) mediaTag = '[Video]';
+            else if (/ic-gif/i.test(text)) mediaTag = '[GIF]';
+            else if (/view once message|mensaje de visualizaci/i.test(text)) mediaTag = '[View Once Message]';
+        }
+
+        // Strip UI text artifacts and connected durations (e.g. ic-keyboard-voice-filled0:21 or Mensaje de voz0:21)
+        text = text.replace(/(?:ic-[a-zA-Z0-9\-]+|wds-[a-zA-Z0-9\-]+|Voice message|Mensaje de voz)(?:\s*:?\d{1,2}:\d{2})?/gi, '');
+        // Strip standalone durations like 0:21, :52, :40, 1:05
+        text = text.replace(/^:?\d{1,2}:\d{2}$/, '');
         text = text.replace(/[\u200e\u200f]+/g, '').trim();
+
+        // If it's a voice note or audio quote and only duration remains, discard text
+        if ((mediaTag === '[Voice Note]' || mediaTag === '[Audio]' || mediaTag === '[View Once Message]') && /^:?\d{1,2}:\d{2}$/.test(text)) {
+            text = '';
+        }
 
         let finalContent = text;
         if (mediaTag && text) {
@@ -401,6 +477,17 @@
         const text = msgEl.textContent || '';
         if (deletedEl || text.includes('This message was deleted') || text.includes('Eliminaste este mensaje') || text.includes('Se eliminó este mensaje')) {
             return { type: 'revoked', content: '[Deleted message]', mediaUrl: null };
+        }
+        return null;
+    }
+
+    function parseViewOnceMessage(msgEl) {
+        if (msgEl.querySelector('[data-icon*="view-once"]')) {
+            return { type: 'view_once', content: '[View Once Message]', mediaUrl: null };
+        }
+        const text = msgEl.textContent || '';
+        if (text.includes('You received a view once message') || text.includes('view once message')) {
+            return { type: 'view_once', content: '[View Once Message]', mediaUrl: null };
         }
         return null;
     }
@@ -511,12 +598,14 @@
             blobUrl = sticker.src;
         }
 
-        return {
+        const parsedData = {
             type: 'sticker',
             content: '[Sticker]',
             mediaUrl: null,
             blobUrl: blobUrl
         };
+        attachThumbnail(parsedData, sticker, blobUrl);
+        return parsedData;
     }
 
     function parseImageMessage(msgEl) {
@@ -544,12 +633,14 @@
 
         const content = caption ? `[Image] ${caption}` : '[Image]';
 
-        return {
+        const parsedData = {
             type: 'image',
             content: content,
             mediaUrl: null,
             blobUrl: blobUrl
         };
+        attachThumbnail(parsedData, img, blobUrl);
+        return parsedData;
     }
 
     function parseVideoMessage(msgEl) {
@@ -563,6 +654,7 @@
         if (!video && !hasVideoIcon) return null;
 
         let blobUrl = null;
+        let mediaElement = video;
         if (video) {
             if (video.poster && (video.poster.startsWith('blob:') || video.poster.startsWith('data:'))) {
                 blobUrl = video.poster;
@@ -572,7 +664,10 @@
         }
         if (!blobUrl) {
             const posterImg = msgEl.querySelector('img[src^="blob:"], img[src^="data:"]');
-            if (posterImg && posterImg.src) blobUrl = posterImg.src;
+            if (posterImg && posterImg.src) {
+                blobUrl = posterImg.src;
+                mediaElement = posterImg;
+            }
         }
 
         const textEl = msgEl.querySelector(SELECTORS.msgText || '.selectable-text.copyable-text');
@@ -583,12 +678,14 @@
         const tag = isGif ? '[GIF]' : '[Video]';
         const content = caption ? `${tag} ${caption}` : tag;
 
-        return {
+        const parsedData = {
             type: isGif ? 'gif' : 'video',
             content: content,
             mediaUrl: null,
             blobUrl: blobUrl
         };
+        attachThumbnail(parsedData, mediaElement, blobUrl);
+        return parsedData;
     }
 
     function parseAudioMessage(msgEl) {
@@ -622,7 +719,7 @@
 
         if (!name || /^(?:Message|Add to group|Enviar mensaje|Añadir|View contact)$/i.test(name)) {
             const clone = msgEl.cloneNode(true);
-            clone.querySelectorAll('button, [role="button"], [data-testid="msg-meta"], [data-icon], svg').forEach(el => el.remove());
+            clone.querySelectorAll('button, [role="button"], [data-testid="msg-meta"], [data-icon], svg, [data-testid="author"], span._11JPr, span._2103K').forEach(el => el.remove());
             name = clone.textContent.trim();
         }
 
@@ -653,7 +750,7 @@
 
         // Clean UI icon artifacts from question
         question = (question || 'Poll')
-            .replace(/\b(?:multi-select-icon-filled|ic-check|wds-ic-delivered|wds-ic-read|tail-in|tail-out)\b/gi, '')
+            .replace(/\b(?:multi-select-icon-filled|poll-refreshed-thin|ic-[a-zA-Z0-9\-]+|wds-ic-[a-zA-Z0-9\-]+|tail-in|tail-out)\b/gi, '')
             .replace(/[\u200e\u200f]+/g, '')
             .trim();
 
@@ -777,6 +874,7 @@
     // Main dispatcher using strategy pattern in order of specificity
     const parsers = [
         parseDeletedMessage,
+        parseViewOnceMessage,
         parseStickerMessage,
         parsePollMessage,
         parseContactMessage,
@@ -825,17 +923,18 @@
             if (parent) msgId = parent.getAttribute('data-id');
         }
 
-        return {
-            id: msgId || null,
-            timestamp: timestamp,
-            sender: sender,
-            type: parsedData.type,
-            content: parsedData.content,
-            quotedMessage: quoted,
-            mediaUrl: parsedData.mediaUrl,
-            blobUrl: parsedData.blobUrl || null,
-            rawFormat: rawFormat
-        };
+        // Mutate parsedData in-place so that any async thumbnail captures
+        // (from attachThumbnail's fetch fallback) write to the SAME object
+        // that gets stored in the scroller's messageMap.
+        parsedData.id = msgId || null;
+        parsedData.timestamp = timestamp;
+        parsedData.sender = sender;
+        parsedData.quotedMessage = quoted;
+        parsedData.rawFormat = rawFormat;
+        if (!parsedData.blobUrl) parsedData.blobUrl = null;
+        if (!parsedData.thumbnail) parsedData.thumbnail = null;
+
+        return parsedData;
     }
 
     window.WAExporter.Parsers = {

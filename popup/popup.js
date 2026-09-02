@@ -566,13 +566,30 @@
             if (modelBadge) {
                 const selectedModel = $('aiModelSelect') ? $('aiModelSelect').value : '';
                 const modelName = extra.model || (selectedModel && selectedModel !== 'auto' ? selectedModel : 'gemini-3.5-flash-lite');
+                
+                // If model changed (fallback), trigger pulse animation
+                if (modelBadge.dataset.currentModel && modelBadge.dataset.currentModel !== modelName) {
+                    modelBadge.classList.remove('pulsing');
+                    void modelBadge.offsetWidth; // trigger reflow to restart animation
+                    modelBadge.classList.add('pulsing');
+                }
+                modelBadge.dataset.currentModel = modelName;
+                
                 modelBadge.textContent = modelName.replace(/^models\//, '');
                 modelBadge.style.display = 'inline-block';
             }
         } else {
-            if (barFill) {
-                barFill.classList.add('indeterminate');
-                barFill.style.width = '';
+            if (phase === 'scrolling' && extra.targetCount && count > 0) {
+                const pct = Math.min(100, Math.round((count / extra.targetCount) * 100));
+                if (barFill) {
+                    barFill.classList.remove('indeterminate');
+                    barFill.style.width = `${pct}%`;
+                }
+            } else {
+                if (barFill) {
+                    barFill.classList.add('indeterminate');
+                    barFill.style.width = '';
+                }
             }
             if (modelBadge) modelBadge.style.display = 'none';
             if (batchDetail) batchDetail.textContent = '';
@@ -585,7 +602,12 @@
                 } else if (phase === 'capturing_thumbnails') {
                     phaseEl.textContent = `Rendering thumbnails (${count})…`;
                 } else {
-                    phaseEl.textContent = source === 'dom' ? 'Scrolling chat DOM…' : 'Reading database…';
+                    if (phase === 'scrolling' && extra.targetCount && count > 0) {
+                        const pct = Math.min(100, Math.round((count / extra.targetCount) * 100));
+                        phaseEl.textContent = `Scrolling chat DOM (${pct}%)`;
+                    } else {
+                        phaseEl.textContent = source === 'dom' ? 'Scrolling chat DOM…' : 'Reading database…';
+                    }
                 }
             }
         }
