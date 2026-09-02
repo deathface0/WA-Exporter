@@ -23,13 +23,14 @@
     if (window.__waMainListenerAttached) return;
     window.__waMainListenerAttached = true;
 
-    function broadcastProgress(count, phase, source) {
+    function broadcastProgress(count, phase, source, extra = {}) {
         try {
             browser.runtime.sendMessage({
                 type: 'extraction_progress',
                 count: count,
                 phase: phase,
-                source: source
+                source: source,
+                ...extra
             }).catch(() => { });
         } catch (e) { }
     }
@@ -184,8 +185,9 @@
 
                             if (isComplete) {
                                 console.log(`[WA-Exporter] IndexedDB completely satisfied request (${idbMessages.length} messages).`);
+                                const processedMessages = await runMediaAndAiPipeline(idbMessages, request);
                                 const res = {
-                                    data: idbMessages,
+                                    data: processedMessages,
                                     source: 'database',
                                     isPartial: false
                                 };
@@ -210,8 +212,9 @@
                     broadcastProgress(0, 'scrolling', 'dom');
 
                     const scrollResult = await window.WAExporter.Scroller.startExtraction(request);
+                    const processedMessages = await runMediaAndAiPipeline(scrollResult.messages || [], request);
                     const res = {
-                        data: scrollResult.messages || [],
+                        data: processedMessages,
                         source: 'dom',
                         isPartial: !!scrollResult.isPartial
                     };
@@ -236,6 +239,115 @@
         })();
 
         return activeExtractionPromise;
+    }
+
+    /**
+     * Post-processing pipeline: captures thumbnails from RAM blob URLs and optionally runs Gemini AI captioning.
+     */
+    async function runMediaAndAiPipeline(messages, request) {
+        if (!Array.isArray(messages) || messages.length === 0) return messages;
+
+        const shouldCaptureThumbnails = request && request.captureThumbnails !== false;
+        const shouldRunAi = request && request.enableAiCaptions && request.geminiApiKey && window.WAExporter.Gemini;
+
+        // 1. Thumbnail Capture Pipeline (needed for thumbnail export or AI vision captioning)
+        if (shouldCaptureThumbnails || shouldRunAi) {
+            const mediaItems = [];
+            messages.forEach((m, idx) => {
+                if (m && m.blobUrl && ['image', 'video', 'gif', 'sticker'].includes(m.type) && !m.thumbnail) {
+                    mediaItems.push({ key: idx, blobUrl: m.blobUrl });
+                }
+            });
+
+            if (mediaItems.length > 0) {
+                console.log(`[WA-Exporter] 🖼️ Capturing thumbnails for ${mediaItems.length} media items...`);
+                broadcastProgress(mediaItems.length, 'capturing_thumbnails', 'dom');
+
+                const maxSize = parseInt(request.thumbnailSize, 10) || 160;
+
+                // Direct instant canvas rendering for all items
+                await Promise.all(mediaItems.map(async (item) => {
+                    const m = messages[item.key];
+                    if (m && !m.thumbnail && item.blobUrl) {
+                        try {
+                            const dataUri = await renderCanvasThumbnail(item.blobUrl, maxSize);
+                            if (dataUri) m.thumbnail = dataUri;
+                        } catch (err) { }
+                    }
+                }));
+
+                const capturedCount = messages.filter(m => m && m.thumbnail).length;
+                console.log(`[WA-Exporter] 🖼️ Successfully captured ${capturedCount} thumbnails.`);
+            }
+        }
+
+        // 2. Gemini AI Captioning Pipeline
+        if (shouldRunAi) {
+            try {
+                broadcastProgress(0, 'ai_captioning', 'ai', { total: 0, model: request.model || null });
+                await window.WAExporter.Gemini.processMessageCaptions(messages, {
+                    apiKey: request.geminiApiKey,
+                    maxRequests: request.maxAiRequests || 50,
+                    customPrompt: request.customPrompt,
+                    model: request.model || null
+                }, (curr, total, phaseLabel, activeModel) => {
+                    broadcastProgress(curr, 'ai_captioning', 'ai', { total: total, model: activeModel || request.model || null });
+                });
+            } catch (aiErr) {
+                console.warn('[WA-Exporter] AI captioning encountered an error:', aiErr.message);
+            }
+        }
+
+        // Clean up internal properties: delete thumbnail after processed by AI, or if thumbnails disabled
+        messages.forEach(m => {
+            if (m) {
+                if (shouldRunAi || !shouldCaptureThumbnails) {
+                    delete m.thumbnail;
+                }
+                delete m.blobUrl;
+            }
+        });
+
+        return messages;
+    }
+
+    async function renderCanvasThumbnail(url, maxSize = 160) {
+        if (!url || typeof url !== 'string') return null;
+        try {
+            const img = await new Promise((resolve, reject) => {
+                const i = new Image();
+                i.crossOrigin = 'anonymous';
+                i.onload = () => resolve(i);
+                i.onerror = () => reject(new Error('Image failed'));
+                i.src = url;
+            });
+            let width = img.naturalWidth || img.width;
+            let height = img.naturalHeight || img.height;
+            if (!width || !height) return null;
+            if (width > height) {
+                if (width > maxSize) {
+                    height = Math.round((height * maxSize) / width);
+                    width = maxSize;
+                }
+            } else {
+                if (height > maxSize) {
+                    width = Math.round((width * maxSize) / height);
+                    height = maxSize;
+                }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, width);
+            canvas.height = Math.max(1, height);
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            let dataUrl = canvas.toDataURL('image/webp', 0.5);
+            if (!dataUrl || !dataUrl.startsWith('data:image/webp')) {
+                dataUrl = canvas.toDataURL('image/jpeg', 0.5);
+            }
+            return dataUrl;
+        } catch (e) {
+            return null;
+        }
     }
 
     /* ── In-Page Auto Action Handlers & Toast Notifications ── */
@@ -286,12 +398,47 @@
             ''
         ].join('\n');
 
-        const body = valid.map(m => m.rawFormat || `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.sender}: ${m.content}`).join('\n');
+        const body = valid.map(m => {
+            let content = m.content || '';
+            if (m.aiCaption) {
+                content += ` [AI: "${m.aiCaption}"]`;
+            }
+            if (m.rawFormat) {
+                if (m.aiCaption) {
+                    return `${m.rawFormat} [AI: "${m.aiCaption}"]`;
+                }
+                return m.rawFormat;
+            }
+            return `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.sender}: ${content}`;
+        }).join('\n');
+
         return header + body;
     }
 
-    function formatAsJson(messages, meta) {
+    function cleanMessageForExport(m, params = {}) {
+        const includeThumbnails = params.captureThumbnails !== false;
+        const item = {
+            timestamp: m.timestamp,
+            sender: m.sender,
+            type: m.type,
+            content: m.content
+        };
+        // Always delete thumbnail after processed by AI, or if thumbnails disabled
+        if (includeThumbnails && m.thumbnail && !m.aiCaption) {
+            item.thumbnail = m.thumbnail;
+        }
+        if (m.aiCaption) {
+            item.aiCaption = m.aiCaption;
+        }
+        item.quotedMessage = m.quotedMessage || null;
+        item.mediaUrl = m.mediaUrl || null;
+        item.rawFormat = m.rawFormat;
+        return item;
+    }
+
+    function formatAsJson(messages, meta, params = {}) {
         const valid = (messages || []).filter(m => (m.content && m.content.trim() !== '') || m.mediaUrl);
+        const cleaned = valid.map(m => cleanMessageForExport(m, params));
         return JSON.stringify({
             metadata: {
                 chatName: meta.chatName,
@@ -299,9 +446,9 @@
                 exportTimestamp: meta.exportTimestamp,
                 scope: meta.scope,
                 scopeLabel: meta.scopeLabel,
-                totalMessages: valid.length
+                totalMessages: cleaned.length
             },
-            messages: valid
+            messages: cleaned
         }, null, 2);
     }
 
@@ -311,7 +458,8 @@
         return `"${str}"`;
     }
 
-    function formatAsCsv(messages, meta) {
+    function formatAsCsv(messages, meta, params = {}) {
+        const includeThumbnails = params.captureThumbnails !== false;
         const valid = (messages || []).filter(m => (m.content && m.content.trim() !== '') || m.mediaUrl);
         const metaComments = [
             `# WhatsApp Chat Export: ${meta.chatName}`,
@@ -319,13 +467,14 @@
             `# Scope: ${meta.scopeLabel} | Total Messages: ${valid.length}`
         ];
 
-        const headers = ['Timestamp', 'Date', 'Time', 'Sender', 'Type', 'Content', 'QuotedSender', 'QuotedContent', 'MediaURL'];
+        const headers = ['Timestamp', 'Date', 'Time', 'Sender', 'Type', 'Content', 'AICaption', 'Thumbnail', 'QuotedSender', 'QuotedContent', 'MediaURL'];
         const rows = valid.map(m => {
             const d = new Date(m.timestamp);
             const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
             const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
             const quotedSender = m.quotedMessage?.sender || '';
             const quotedContent = m.quotedMessage?.content || '';
+            const thumbnailVal = includeThumbnails ? (m.thumbnail || '') : '';
 
             return [
                 escapeCsvCell(m.timestamp),
@@ -334,6 +483,8 @@
                 escapeCsvCell(m.sender),
                 escapeCsvCell(m.type),
                 escapeCsvCell(m.content),
+                escapeCsvCell(m.aiCaption || ''),
+                escapeCsvCell(thumbnailVal),
                 escapeCsvCell(quotedSender),
                 escapeCsvCell(quotedContent),
                 escapeCsvCell(m.mediaUrl || '')
@@ -347,9 +498,9 @@
         const meta = buildExportMetadata(messages, params, chatTitle);
         switch (format) {
             case 'json':
-                return { text: formatAsJson(messages, meta), mime: 'application/json', ext: 'json' };
+                return { text: formatAsJson(messages, meta, params), mime: 'application/json', ext: 'json' };
             case 'csv':
-                return { text: formatAsCsv(messages, meta), mime: 'text/csv;charset=utf-8;', ext: 'csv' };
+                return { text: formatAsCsv(messages, meta, params), mime: 'text/csv;charset=utf-8;', ext: 'csv' };
             case 'txt':
             default:
                 return { text: formatAsTxt(messages, meta), mime: 'text/plain;charset=utf-8;', ext: 'txt' };

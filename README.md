@@ -8,32 +8,34 @@
 
 * **Intelligent Dual-Engine Extraction**:
   * **IndexedDB Engine**: Instant local database retrieval from WhatsApp Web's internal storage when cached.
-  * **Smart DOM Auto-Scroller**: Resilient auto-scrolling with `MutationObserver`, virtualization triggers, and chronological deduplication when deeper history is needed.
+  * **Smart DOM Auto-Scroller**: Resilient auto-scrolling with `MutationObserver`, virtualization triggers, and phone history sync banners.
+  * **Visual DOM Sequencing**: Assigns continuous DOM sequence indices (`domIndex`) across scroll batches to guarantee 100% faithful visual chat ordering even with ambiguous dates or missing date headers.
 * **Seamless Background Execution**:
-  * Closing the extension popup does not interrupt extraction.
-  * Auto-downloads the file or copies text to the clipboard upon completion with an in-page floating toast notification.
+  * Manifest V3 service worker / background script bridge keeps extractions running if the popup closes.
+  * Auto-downloads files or copies to clipboard upon completion with an in-page toast notification.
 * **Automatic Phone History Sync**:
-  * Automatically detects and clicks the *"Click here to get older messages from your phone"* banner when hitting cache boundaries to load older messages over WebSocket.
+  * Automatically detects and triggers the *"Click here to get older messages from your phone"* banner when hitting local cache boundaries to pull deeper chat logs.
 * **Context-Aware Date Parsing**:
-  * Dynamically handles international and US date formats (`DD/MM/YYYY` and `MM/DD/YYYY`) with chat-context validation to prevent premature extraction stops.
+  * Resolves ambiguous `DD/MM/YYYY` vs `MM/DD/YYYY` formats with chat context validation and isolated date divider tracking.
+* **Local Media Thumbnail Capture**:
+  * Extracts media blobs directly from WhatsApp Web memory, downscales via Offscreen Canvas, and embeds lightweight base64 Data URIs (120px / 160px / 256px) into JSON and CSV exports.
+* **High-Efficiency AI Image Captioning (Google Gemini)**:
+  * **Batched Vision Calls**: Captions up to 4 images per API request, cutting latency by 75% and maximizing free-tier quotas.
+  * **Dynamic Model Fallback Cascade**: Prioritizes high-RPD models (`gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`) with automatic fallback to `gemini-3.7-flash` and others on 429/404 errors.
+  * **Customizable Prompts**: Localized defaults with support for user-defined descriptive prompts.
+  * **Key Validation & Safety**: Built-in RPM rate-limiting and API key status checker.
 * **Multiple Export Formats**:
-  * **TXT**: Clean, chronological transcript with timestamps, sender tags, quoted replies, and media labels.
-  * **JSON**: Structured dataset containing timestamps, senders, message types, text, quoted contexts, and document metadata.
-  * **CSV**: Spreadsheet-ready table compatible with Excel, Google Sheets, and data pipelines.
+  * **TXT**: Clean, chronological transcript with timestamps, senders, replies, media labels, and AI descriptions.
+  * **JSON**: Structured schema containing metadata, timestamps, senders, message types, thumbnails, AI captions, and reply trees.
+  * **CSV**: Tabular data ready for Excel, Sheets, and data pipelines (with dedicated `Thumbnail` and `AICaption` columns).
 * **Extraction Scope Options**:
   * **Date Range**: Filter messages between precise start and end dates/times.
-  * **By Count**: Extract the latest *N* messages (e.g., last 100, 500, 3000+).
-  * **All Cached**: Extract the entire accessible chat history.
-* **Rich Content & Message Types**:
-  * Text, Emojis, and formatting
-  * Quoted / Replied messages
-  * Images, Videos, GIFs, and Stickers
-  * Voice Notes and Audio
-  * Documents (PDFs, spreadsheets, docs with clean filenames and extensions)
-  * Polls, Contacts (vCards), and Location links
-  * Deleted / Revoked messages
+  * **By Count**: Extract the latest *N* messages (e.g., 50, 100, 500, 3000+).
+  * **All Cached**: Extract all accessible chat history.
+* **Comprehensive Content Support**:
+  * Text formatting, emojis, quoted replies, images, videos, GIFs, voice notes/audio, stickers, documents, polls, contacts (vCards), location links, and deleted/revoked messages.
 * **100% Client-Side Privacy**:
-  * All operations run strictly inside your browser. No messages, tokens, or personal data ever leave your machine.
+  * All operations run strictly inside your browser. No data ever leaves your computer unless you explicitly enable Gemini AI captioning with your own API key.
 
 ---
 
@@ -42,19 +44,22 @@
 ```
 WA-Exporter/
 ├── manifest.json                  # Manifest V3 configuration (Chrome & Firefox)
+├── background.js                  # Background service worker & API proxy
 ├── README.md                      # Documentation
 ├── .gitignore                     # Git ignore rules
+├── ai/
+│   └── gemini.js                  # Batched Gemini vision client, model cascade & rate limiter
 ├── db/
-│   ├── page-script.js             # MAIN-world IndexedDB query engine
+│   ├── page-script.js             # MAIN-world IndexedDB & thumbnail canvas engine
 │   └── bridge.js                  # Content-script postMessage bridge
 ├── extraction/
-│   ├── selectors.js               # Configurable WhatsApp Web DOM selectors
+│   ├── selectors.js               # WhatsApp Web DOM selectors
 │   ├── parsers.js                 # Message element parsers & date format detector
-│   ├── scroller.js                # Progressive DOM scroller & phone sync handler
+│   ├── scroller.js                # DOM scroller with visual indexing & phone sync
 │   └── main.js                    # Extraction coordinator & background auto-actions
 └── popup/
-    ├── popup.html                 # Clean popup interface
-    ├── popup.css                  # Modern UI (Light & Dark theme support)
+    ├── popup.html                 # Extension popup interface with AI options & progress
+    ├── popup.css                  # UI styling with dark mode support
     └── popup.js                   # Popup UI logic, formatters, and event listeners
 ```
 

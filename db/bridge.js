@@ -1,4 +1,4 @@
-(function() {
+(function () {
     'use strict';
 
     if (typeof browser === 'undefined') {
@@ -63,11 +63,16 @@
 
             window.addEventListener('message', handler);
 
-            // Set fast timeout (fast for count/metadata, short for full extraction)
-            const timeoutLimit = timeoutMs || (action === 'count' ? 500 : 1000);
+            // Set timeout according to action
+            let defaultTimeout = 1000;
+            if (action === 'count') defaultTimeout = 500;
+            else if (action === 'capture_thumbnail') defaultTimeout = 2500;
+            else if (action === 'batch_thumbnails') defaultTimeout = 12000;
+
+            const timeoutLimit = timeoutMs || defaultTimeout;
             const timerId = setTimeout(() => {
                 window.removeEventListener('message', handler);
-                reject(new Error(`IndexedDB query for '${action}' timed out after ${timeoutLimit}ms`));
+                reject(new Error(`Action '${action}' timed out after ${timeoutLimit}ms`));
             }, timeoutLimit);
 
             // Send request to MAIN-world page-script

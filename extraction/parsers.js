@@ -506,10 +506,16 @@
         const hasStickerIcon = msgEl.querySelector('[data-icon="sticker"], [data-testid="sticker"]') !== null;
         if (!sticker && !hasStickerIcon) return null;
 
+        let blobUrl = null;
+        if (sticker && sticker.src && (sticker.src.startsWith('blob:') || sticker.src.startsWith('data:'))) {
+            blobUrl = sticker.src;
+        }
+
         return {
             type: 'sticker',
             content: '[Sticker]',
-            mediaUrl: null
+            mediaUrl: null,
+            blobUrl: blobUrl
         };
     }
 
@@ -519,12 +525,18 @@
             return null;
         }
 
-        const img = msgEl.querySelector(SELECTORS.mediaImage || 'img');
+        const blobImg = msgEl.querySelector('img[src^="blob:"]') || msgEl.querySelector('img[src^="data:"]');
+        const img = blobImg || msgEl.querySelector(SELECTORS.mediaImage || 'img');
         const hasImageIcon = msgEl.querySelector('[data-icon*="image"], [data-testid="image-thumb"]') !== null;
         if (!img && !hasImageIcon) return null;
 
         // Check if it's an emoji img inside text (ignore)
         if (img && (img.classList.contains('emoji') || img.hasAttribute('data-emoji-char'))) return null;
+
+        let blobUrl = null;
+        if (img && img.src && (img.src.startsWith('blob:') || img.src.startsWith('data:'))) {
+            blobUrl = img.src;
+        }
 
         const textEl = msgEl.querySelector(SELECTORS.msgText || '.selectable-text.copyable-text');
         let caption = textEl ? extractTextWithEmojis(textEl) : '';
@@ -535,7 +547,8 @@
         return {
             type: 'image',
             content: content,
-            mediaUrl: null
+            mediaUrl: null,
+            blobUrl: blobUrl
         };
     }
 
@@ -549,6 +562,19 @@
         const hasVideoIcon = msgEl.querySelector('[data-icon="video"], [data-icon="gif"]') !== null;
         if (!video && !hasVideoIcon) return null;
 
+        let blobUrl = null;
+        if (video) {
+            if (video.poster && (video.poster.startsWith('blob:') || video.poster.startsWith('data:'))) {
+                blobUrl = video.poster;
+            } else if (video.src && (video.src.startsWith('blob:') || video.src.startsWith('data:'))) {
+                blobUrl = video.src;
+            }
+        }
+        if (!blobUrl) {
+            const posterImg = msgEl.querySelector('img[src^="blob:"], img[src^="data:"]');
+            if (posterImg && posterImg.src) blobUrl = posterImg.src;
+        }
+
         const textEl = msgEl.querySelector(SELECTORS.msgText || '.selectable-text.copyable-text');
         let caption = textEl ? extractTextWithEmojis(textEl) : '';
         caption = caption.replace(/^(?:play\s+video|reproducir\s+video|watch\s+video|ver\s+video)\s*/i, '').trim();
@@ -560,7 +586,8 @@
         return {
             type: isGif ? 'gif' : 'video',
             content: content,
-            mediaUrl: null
+            mediaUrl: null,
+            blobUrl: blobUrl
         };
     }
 
@@ -792,13 +819,21 @@
         const quotedPrefix = quoted ? `[Replying to ${quotedSender}"${quoted.content}"] ` : '';
         const rawFormat = `[${timeStr}, ${dateStr}] ${sender}: ${quotedPrefix}${parsedData.content}`;
 
+        let msgId = msgEl.getAttribute('data-id');
+        if (!msgId) {
+            const parent = msgEl.closest('[data-id]');
+            if (parent) msgId = parent.getAttribute('data-id');
+        }
+
         return {
+            id: msgId || null,
             timestamp: timestamp,
             sender: sender,
             type: parsedData.type,
             content: parsedData.content,
             quotedMessage: quoted,
             mediaUrl: parsedData.mediaUrl,
+            blobUrl: parsedData.blobUrl || null,
             rawFormat: rawFormat
         };
     }

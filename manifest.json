@@ -12,9 +12,16 @@
         "clipboardWrite",
         "storage"
     ],
+    "background": {
+        "scripts": [
+            "background.js"
+        ],
+        "service_worker": "background.js"
+    },
     "host_permissions": [
         "*://web.whatsapp.com/*",
-        "https://web.whatsapp.com/*"
+        "https://web.whatsapp.com/*",
+        "https://generativelanguage.googleapis.com/*"
     ],
     "content_scripts": [
         {
@@ -23,6 +30,7 @@
                 "https://web.whatsapp.com/*"
             ],
             "js": [
+                "ai/gemini.js",
                 "db/bridge.js",
                 "extraction/selectors.js",
                 "extraction/parsers.js",

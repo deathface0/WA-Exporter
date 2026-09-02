@@ -1,4 +1,4 @@
-(function() {
+(function () {
     'use strict';
 
     if (window.__waPageScriptInjected) return;
@@ -8,7 +8,7 @@
         // METHOD 1: React Fiber on conversation header (Fastest & direct)
         try {
             const header = document.querySelector('header[data-testid="conversation-header"]') ||
-                           document.querySelector('#main header');
+                document.querySelector('#main header');
             if (header) {
                 const fiberKey = Object.keys(header).find(k => k.startsWith('__reactFiber$'));
                 if (fiberKey) {
@@ -34,7 +34,7 @@
         // METHOD 2: Title match in IndexedDB 'chat' store
         try {
             const titleNode = document.querySelector('#main header [data-testid="conversation-info-header-chat-title"]') ||
-                              document.querySelector('#main header span[dir="auto"]');
+                document.querySelector('#main header span[dir="auto"]');
             if (titleNode && db.objectStoreNames.contains('chat')) {
                 const chatTitle = titleNode.textContent.trim();
                 const matchedId = await new Promise((resolve) => {
@@ -145,6 +145,42 @@
         if (!event.data || !event.data.__waExpReq) return;
         const { callbackId, action, params } = event.data;
 
+        // 1. Handle Thumbnail operations directly without opening IndexedDB
+        if (action === 'capture_thumbnail') {
+            try {
+                const blobUrl = params?.blobUrl;
+                const maxSize = params?.maxSize || 160;
+                const quality = params?.quality || 0.5;
+                const dataUri = await captureBlobThumbnail(blobUrl, maxSize, quality);
+                window.postMessage({ __waExp: callbackId, result: dataUri }, '*');
+            } catch (err) {
+                window.postMessage({ __waExp: callbackId, error: err.message }, '*');
+            }
+            return;
+        }
+
+        if (action === 'batch_thumbnails') {
+            try {
+                const items = params?.items || []; // Array of { key, blobUrl }
+                const maxSize = params?.maxSize || 160;
+                const quality = params?.quality || 0.5;
+                const results = {};
+
+                for (const item of items) {
+                    if (item && item.blobUrl) {
+                        const dataUri = await captureBlobThumbnail(item.blobUrl, maxSize, quality);
+                        if (dataUri) results[item.key] = dataUri;
+                    }
+                }
+
+                window.postMessage({ __waExp: callbackId, result: results }, '*');
+            } catch (err) {
+                window.postMessage({ __waExp: callbackId, error: err.message }, '*');
+            }
+            return;
+        }
+
+        // 2. Handle Database queries (count / extract)
         try {
             const request = indexedDB.open('model-storage');
 
@@ -185,7 +221,7 @@
                 });
 
                 const validTypes = ['chat', 'image', 'video', 'audio', 'ptt', 'document',
-                                    'sticker', 'location', 'vcard', 'revoked'];
+                    'sticker', 'location', 'vcard', 'revoked'];
 
                 if (action === 'count') {
                     const count = chatMsgs.filter(m => validTypes.includes(m.type)).length;
@@ -221,4 +257,48 @@
             window.postMessage({ __waExp: callbackId, error: e.message }, '*');
         }
     });
+
+    async function captureBlobThumbnail(url, maxSize = 160, quality = 0.5) {
+        if (!url || typeof url !== 'string') return null;
+        try {
+            const img = await new Promise((resolve, reject) => {
+                const i = new Image();
+                i.crossOrigin = 'anonymous';
+                i.onload = () => resolve(i);
+                i.onerror = () => reject(new Error('Image failed to load'));
+                i.src = url;
+            });
+
+            let width = img.naturalWidth || img.width;
+            let height = img.naturalHeight || img.height;
+            if (!width || !height) return null;
+
+            if (width > height) {
+                if (width > maxSize) {
+                    height = Math.round((height * maxSize) / width);
+                    width = maxSize;
+                }
+            } else {
+                if (height > maxSize) {
+                    width = Math.round((width * maxSize) / height);
+                    height = maxSize;
+                }
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, width);
+            canvas.height = Math.max(1, height);
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+
+            let dataUrl = canvas.toDataURL('image/webp', quality);
+            if (!dataUrl || !dataUrl.startsWith('data:image/webp')) {
+                dataUrl = canvas.toDataURL('image/jpeg', quality);
+            }
+            return dataUrl;
+        } catch (e) {
+            console.warn('[WA-Exporter PageScript] captureBlobThumbnail error:', e);
+            return null;
+        }
+    }
 })();

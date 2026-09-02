@@ -12,7 +12,8 @@
     let isAborted = false;
 
     function createMessageKey(msg) {
-        // Unique signature for deduplication
+        if (msg.id) return msg.id;
+        // Unique signature for deduplication fallback
         return `${msg.timestamp}_${msg.sender}_${msg.type}_${(msg.content || '').slice(0, 40)}`;
     }
 
@@ -127,48 +128,79 @@
             return true;
         });
 
+        const parsedRows = [];
         rows.forEach(row => {
-            if (row.matches(SELECTORS.dateDivider) || row.querySelector(SELECTORS.dateDivider)) {
-                const text = row.textContent.trim();
+            // Check if this element IS a date divider or CONTAINS one
+            const isDivider = row.matches(SELECTORS.dateDivider);
+            const containsDivider = !isDivider && row.querySelector(SELECTORS.dateDivider);
+
+            if (isDivider || containsDivider) {
+                const dividerEl = isDivider ? row : containsDivider;
+                const text = dividerEl.textContent.trim();
                 const parsed = parseDateHeader(text);
                 if (parsed) {
+                    contextState.dividerDate = parsed;
                     contextState.date = parsed;
                 }
-                return;
+                if (isDivider && !row.matches(SELECTORS.messageRow)) {
+                    return;
+                }
             }
 
-            // Message container
             const msgEl = row.matches(SELECTORS.msgContainer) ? row : (row.querySelector(SELECTORS.msgContainer) || row);
             if (!msgEl) return;
 
             try {
                 const parsedMsg = window.WAExporter.Parsers.parseDOMMessage(
                     msgEl,
-                    contextState.date,
+                    contextState.dividerDate || contextState.date,
                     contextState.lastMsg,
                     contextState.myName
                 );
 
                 if (parsedMsg && ((parsedMsg.content && parsedMsg.content.trim() !== '') || parsedMsg.mediaUrl)) {
-                    // Update context state
                     contextState.lastMsg = parsedMsg;
                     if (parsedMsg.timestamp) {
                         contextState.date = new Date(parsedMsg.timestamp);
                     }
 
-                    // Learn my display name if found on an outgoing message
                     if (window.WAExporter.Parsers.isOutgoingMessage(msgEl) && parsedMsg.sender && parsedMsg.sender !== 'Me' && !contextState.myName) {
                         contextState.myName = parsedMsg.sender;
                     }
 
                     const key = createMessageKey(parsedMsg);
-                    if (!messageMap.has(key)) {
-                        messageMap.set(key, parsedMsg);
-                    }
+                    parsedRows.push({ key, parsedMsg, row });
                 }
             } catch (err) {
                 console.warn('[WA-Exporter Scroller] Error parsing DOM message:', err);
             }
+        });
+
+        if (parsedRows.length === 0) return;
+
+        // Assign DOM sequence indices to preserve visual order across scroll chunks
+        let anchorIndex = contextState.lowestIndex;
+        let anchorRowIdx = parsedRows.length;
+
+        for (let i = 0; i < parsedRows.length; i++) {
+            if (messageMap.has(parsedRows[i].key)) {
+                anchorIndex = messageMap.get(parsedRows[i].key).domIndex;
+                anchorRowIdx = i;
+                break; // Align with the FIRST known message in this viewport
+            }
+        }
+
+        let currentDomIndex = anchorIndex - anchorRowIdx;
+
+        parsedRows.forEach(item => {
+            if (!messageMap.has(item.key)) {
+                item.parsedMsg.domIndex = currentDomIndex;
+                messageMap.set(item.key, item.parsedMsg);
+                
+                if (currentDomIndex < contextState.lowestIndex) contextState.lowestIndex = currentDomIndex;
+                if (currentDomIndex > contextState.highestIndex) contextState.highestIndex = currentDomIndex;
+            }
+            currentDomIndex++;
         });
     }
 
@@ -236,8 +268,11 @@
         const messageMap = new Map();
         const contextState = {
             date: null,
+            dividerDate: null,
             lastMsg: null,
-            myName: null
+            myName: null,
+            lowestIndex: 0,
+            highestIndex: 0
         };
 
         console.group('%c[WA-Exporter] 🚀 DOM Scroller Extraction Started', 'color: #00a884; font-weight: bold; font-size: 13px;');
@@ -292,13 +327,11 @@
         console.log(`👀 Initial scan in viewport: %c${messageMap.size} messages found.`, 'color: #25d366;');
 
         while (!isAborted) {
-            // Check if target count is reached
             if (mode === 'count' && messageMap.size >= targetCount) {
                 stopReason = `Target count reached (${messageMap.size} >= ${targetCount})`;
                 break;
             }
 
-            // Check if earliest message has reached or passed startDate
             if (mode === 'date') {
                 const validMsgs = Array.from(messageMap.values()).filter(m => m.timestamp && typeof m.timestamp === 'number' && m.timestamp > 946684800000);
                 const earliestMsg = validMsgs.reduce((earliest, msg) => {
@@ -311,9 +344,7 @@
                 }
             }
 
-            // If we are at/near the top of the viewport
             if (scrollContainer.scrollTop <= 20) {
-                // 1. Check for phone sync button
                 if (checkAndClickLoadOlderMessages()) {
                     console.log('%c[WA-Exporter] 📱 Phone sync button detected & clicked! Waiting for older batch from phone...', 'color: #0288d1; font-weight: bold;');
                     reportProgress('syncing_phone');
@@ -330,7 +361,6 @@
                     continue;
                 }
 
-                // 2. Perform scroll jiggle to wake up WhatsApp Web's intersection observer
                 scrollContainer.scrollTop = 160;
                 scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
                 await sleep(150);
@@ -373,14 +403,12 @@
                 }
             }
 
-            // Normal step upwards
             scrollContainer.scrollTop = Math.max(0, scrollContainer.scrollTop - 750);
             scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
 
             await waitForNewDOMNodes(scrollContainer, 1000);
             await sleep(200);
 
-            // Scan newly rendered messages
             scanVisibleMessages(messageMap, contextState);
 
             if (messageMap.size > lastSize) {
@@ -395,15 +423,17 @@
                 }
             }
         }
-
-        if (isAborted) {
+            if (isAborted) {
             stopReason = 'Extraction was cancelled by the user';
         }
 
-        reportProgress('finalizing');
-
-        // Filter and sort messages chronologically
-        let sorted = Array.from(messageMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+        // Filter and sort messages by DOM visual order
+        let sorted = Array.from(messageMap.values()).sort((a, b) => {
+            if (typeof a.domIndex === 'number' && typeof b.domIndex === 'number') {
+                return a.domIndex - b.domIndex;
+            }
+            return a.timestamp - b.timestamp;
+        });
         const totalScanned = sorted.length;
 
         if (mode === 'date') {

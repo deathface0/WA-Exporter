@@ -22,7 +22,7 @@
         mediaLocation: 'a[href*="maps.google"], a[href*="google.com/maps"], a[href*="maps.apple"], a[href*="waze.com"]',
         deletedMsg: '[data-testid="recalled"], span[data-icon="recalled"], [data-testid="icon-recalled"]',
         senderName: '[data-testid="msg-author"], span[data-testid="author"], span._11JPr, span._2103K',
-        dateDivider: '[data-testid="chat-date-header"], span[data-testid="chat-date-header"], div[data-testid="chat-date-header"], div.focusable-list-item[role="row"] span[dir="auto"]',
+        dateDivider: '[data-testid="chat-date-header"], span[data-testid="chat-date-header"], div[data-testid="chat-date-header"]',
         scrollContainer: 'div[scrollable="true"], .x10l6tqk.x13vifvy.x1o0tod.xupqr0c, #main div[tabindex="-1"], #main div[data-testid="conversation-panel-messages"]'
     };
 

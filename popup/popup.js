@@ -1,4 +1,4 @@
-(function() {
+(function () {
     'use strict';
 
     if (typeof browser === 'undefined') {
@@ -28,8 +28,12 @@
         // Restore persisted inputs
         let storage = {};
         try {
-            storage = await browser.storage.local.get(['startTime', 'endTime', 'extractMode', 'exportFormat', 'messageCount']);
-        } catch (e) {}
+            storage = await browser.storage.local.get([
+                'startTime', 'endTime', 'extractMode', 'exportFormat', 'messageCount',
+                'captureThumbnails', 'thumbnailResolution', 'enableAiCaptions', 'geminiApiKey', 'maxAiRequests', 'advancedExpanded',
+                'aiModelPreference', 'customAiPrompt', 'promptExpanded'
+            ]);
+        } catch (e) { }
 
         $('startTime').value = storage.startTime || formatLocalDatetime(yesterday);
         $('endTime').value = storage.endTime || formatLocalDatetime(now);
@@ -45,7 +49,48 @@
             if (r) r.checked = true;
         }
 
+        // Restore Advanced & AI settings
+        if (storage.captureThumbnails !== undefined) {
+            $('toggleThumbnails').checked = !!storage.captureThumbnails;
+        }
+        if (storage.thumbnailResolution) {
+            $('thumbnailResolution').value = storage.thumbnailResolution;
+        }
+        if (storage.enableAiCaptions !== undefined) {
+            $('toggleAiCaptions').checked = !!storage.enableAiCaptions;
+        }
+        if (storage.geminiApiKey) {
+            $('geminiApiKey').value = storage.geminiApiKey;
+        }
+        if (storage.maxAiRequests) {
+            $('maxAiRequests').value = storage.maxAiRequests;
+        }
+        if (storage.aiModelPreference && $('aiModelSelect')) {
+            $('aiModelSelect').value = storage.aiModelPreference;
+        }
+        if (storage.customAiPrompt && $('customAiPrompt')) {
+            $('customAiPrompt').value = storage.customAiPrompt;
+        }
+        if (storage.advancedExpanded) {
+            $('advancedContent').style.display = 'flex';
+            $('advancedToggleArrow').textContent = '▾';
+        }
+        if (storage.promptExpanded && $('promptContent')) {
+            $('promptContent').style.display = 'flex';
+            $('promptToggleArrow').textContent = '▾';
+        }
+
+        function updateCapacityBadge() {
+            const calls = parseInt($('maxAiRequests').value, 10) || 50;
+            const items = calls * 4;
+            if ($('aiCapacityBadge')) {
+                $('aiCapacityBadge').textContent = `≈ ${items} items`;
+            }
+        }
+
+        updateCapacityBadge();
         toggleInputs();
+        toggleAdvancedSections();
 
         // Persist on change & invalidate cache
         document.querySelectorAll('input[name="extractMode"]').forEach(r => {
@@ -77,6 +122,111 @@
             invalidateCache();
         });
 
+        // Advanced & AI handlers
+        $('advancedToggleBtn').addEventListener('click', () => {
+            const content = $('advancedContent');
+            const arrow = $('advancedToggleArrow');
+            const isHidden = content.style.display === 'none';
+            content.style.display = isHidden ? 'flex' : 'none';
+            arrow.textContent = isHidden ? '▾' : '▸';
+            browser.storage.local.set({ advancedExpanded: isHidden });
+        });
+
+        if ($('promptToggleBtn')) {
+            $('promptToggleBtn').addEventListener('click', () => {
+                const content = $('promptContent');
+                const arrow = $('promptToggleArrow');
+                const isHidden = content.style.display === 'none';
+                content.style.display = isHidden ? 'flex' : 'none';
+                arrow.textContent = isHidden ? '▾' : '▸';
+                browser.storage.local.set({ promptExpanded: isHidden });
+            });
+        }
+
+        if ($('resetPromptBtn')) {
+            $('resetPromptBtn').addEventListener('click', () => {
+                $('customAiPrompt').value = '';
+                browser.storage.local.set({ customAiPrompt: '' });
+                invalidateCache();
+            });
+        }
+
+        if ($('customAiPrompt')) {
+            $('customAiPrompt').addEventListener('input', (e) => {
+                browser.storage.local.set({ customAiPrompt: e.target.value });
+                invalidateCache();
+            });
+        }
+
+        if ($('aiModelSelect')) {
+            $('aiModelSelect').addEventListener('change', (e) => {
+                browser.storage.local.set({ aiModelPreference: e.target.value });
+                invalidateCache();
+            });
+        }
+
+        $('toggleThumbnails').addEventListener('change', (e) => {
+            browser.storage.local.set({ captureThumbnails: e.target.checked });
+            toggleAdvancedSections();
+            invalidateCache();
+        });
+
+        $('thumbnailResolution').addEventListener('change', (e) => {
+            browser.storage.local.set({ thumbnailResolution: e.target.value });
+            invalidateCache();
+        });
+
+        $('toggleAiCaptions').addEventListener('change', (e) => {
+            browser.storage.local.set({ enableAiCaptions: e.target.checked });
+            toggleAdvancedSections();
+            invalidateCache();
+        });
+
+        $('geminiApiKey').addEventListener('input', (e) => {
+            browser.storage.local.set({ geminiApiKey: e.target.value.trim() });
+            $('apiKeyValidationStatus').style.display = 'none';
+            invalidateCache();
+        });
+
+        $('maxAiRequests').addEventListener('input', () => {
+            updateCapacityBadge();
+        });
+
+        $('maxAiRequests').addEventListener('change', (e) => {
+            updateCapacityBadge();
+            browser.storage.local.set({ maxAiRequests: e.target.value });
+        });
+
+        $('validateKeyBtn').addEventListener('click', async () => {
+            const key = $('geminiApiKey').value.trim();
+            const statusEl = $('apiKeyValidationStatus');
+            if (!key) {
+                statusEl.className = 'validation-status error';
+                statusEl.textContent = '❌ Please enter an API key.';
+                statusEl.style.display = 'block';
+                return;
+            }
+            statusEl.className = 'validation-status';
+            statusEl.textContent = '⏳ Checking key with Google AI Studio...';
+            statusEl.style.display = 'block';
+
+            try {
+                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
+                if (res.status === 200) {
+                    const data = await res.json();
+                    const models = (data && data.models) ? data.models.length : 0;
+                    statusEl.className = 'validation-status success';
+                    statusEl.textContent = `✅ Valid! Connected to Google AI (${models} models available).`;
+                } else {
+                    statusEl.className = 'validation-status error';
+                    statusEl.textContent = `❌ Invalid key (Status ${res.status}).`;
+                }
+            } catch (err) {
+                statusEl.className = 'validation-status error';
+                statusEl.textContent = `❌ Error checking key: ${err.message}`;
+            }
+        });
+
         // Listen for background extraction events
         browser.runtime.onMessage.addListener((message) => {
             if (!message) return;
@@ -86,7 +236,10 @@
                     isExtracting = true;
                     setProgressVisible(true);
                 }
-                updateProgress(message.count, message.phase, message.source);
+                updateProgress(message.count, message.phase, message.source, {
+                    total: message.total,
+                    model: message.model
+                });
                 setStatus('Extracting messages…', true);
             } else if (message.type === 'extraction_completed') {
                 isExtracting = false;
@@ -124,6 +277,14 @@
         $('countInput').style.display = mode === 'count' ? 'block' : 'none';
     }
 
+    function toggleAdvancedSections() {
+        const thumbsOn = $('toggleThumbnails').checked;
+        $('thumbnailOptions').style.display = thumbsOn ? 'flex' : 'none';
+
+        const aiOn = $('toggleAiCaptions').checked;
+        $('aiOptions').style.display = aiOn ? 'flex' : 'none';
+    }
+
     function invalidateCache() {
         cachedResult = null;
         cachedParams = null;
@@ -131,12 +292,21 @@
 
     function getCurrentParams() {
         const mode = document.querySelector('input[name="extractMode"]:checked').value;
+        const selectedModel = $('aiModelSelect') ? $('aiModelSelect').value : 'auto';
+        const customPrompt = $('customAiPrompt') ? $('customAiPrompt').value.trim() : '';
         return {
             chatId: activeChatTitle,
             mode,
             startTime: $('startTime').value,
             endTime: $('endTime').value,
-            messageCount: $('messageCount').value
+            messageCount: $('messageCount').value,
+            captureThumbnails: $('toggleThumbnails').checked,
+            thumbnailSize: $('thumbnailResolution').value,
+            enableAiCaptions: $('toggleAiCaptions').checked,
+            geminiApiKey: $('geminiApiKey').value.trim(),
+            maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
+            model: selectedModel === 'auto' ? null : selectedModel,
+            customPrompt: customPrompt || null
         };
     }
 
@@ -144,18 +314,26 @@
         if (!p1 || !p2) return false;
         if (p1.chatId && p2.chatId && p1.chatId !== p2.chatId) return false;
         if (p1.mode !== p2.mode) return false;
+        if (p1.captureThumbnails !== p2.captureThumbnails) return false;
+        if (p1.thumbnailSize !== p2.thumbnailSize) return false;
+        if (p1.enableAiCaptions !== p2.enableAiCaptions) return false;
+        if (p1.geminiApiKey !== p2.geminiApiKey) return false;
+        if (p1.maxAiRequests !== p2.maxAiRequests) return false;
+        if (p1.model !== p2.model) return false;
+        if (p1.customPrompt !== p2.customPrompt) return false;
         if (p1.mode === 'date') {
             return p1.startTime === p2.startTime && p1.endTime === p2.endTime;
         }
         if (p1.mode === 'count') {
             return String(p1.messageCount) === String(p2.messageCount);
         }
-        return true; // 'all'
+        return true;
     }
 
     /* ── Content Script Injection ── */
 
     const REQUIRED_SCRIPTS = [
+        'ai/gemini.js',
         'db/bridge.js',
         'extraction/selectors.js',
         'extraction/parsers.js',
@@ -170,7 +348,7 @@
                 world: 'MAIN',
                 files: ['db/page-script.js']
             });
-        } catch (e) {}
+        } catch (e) { }
 
         for (const file of REQUIRED_SCRIPTS) {
             try {
@@ -178,7 +356,7 @@
                     target: { tabId: tabId },
                     files: [file]
                 });
-            } catch (err) {}
+            } catch (err) { }
         }
     }
 
@@ -195,7 +373,7 @@
             if (waTabs && waTabs.length > 0) {
                 return waTabs[0];
             }
-        } catch (e) {}
+        } catch (e) { }
 
         return activeTab;
     }
@@ -291,7 +469,14 @@
                     mode: state.request.mode,
                     startTime: $('startTime').value,
                     endTime: $('endTime').value,
-                    messageCount: $('messageCount').value
+                    messageCount: $('messageCount').value,
+                    captureThumbnails: $('toggleThumbnails').checked,
+                    thumbnailSize: $('thumbnailResolution').value,
+                    enableAiCaptions: $('toggleAiCaptions').checked,
+                    geminiApiKey: $('geminiApiKey').value.trim(),
+                    maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
+                    model: state.request.model || null,
+                    customPrompt: state.request.customPrompt || null
                 } : getCurrentParams();
 
                 const sourceMsg = state.result.source === 'database' ? 'via database' : 'via DOM scroll';
@@ -339,26 +524,69 @@
     function setProgressVisible(visible) {
         const pc = $('progressContainer');
         const cancelBtn = $('cancelBtn');
+        const barFill = $('progressBarFill');
+        const modelBadge = $('progressModelBadge');
+        const batchDetail = $('progressBatchDetail');
+
         if (visible) {
             pc.classList.add('active');
             cancelBtn.style.display = 'flex';
         } else {
             pc.classList.remove('active');
             cancelBtn.style.display = 'none';
+            if (barFill) {
+                barFill.classList.add('indeterminate');
+                barFill.style.width = '';
+            }
+            if (modelBadge) modelBadge.style.display = 'none';
+            if (batchDetail) batchDetail.textContent = '';
         }
     }
 
-    function updateProgress(count, phase = 'scrolling', source = 'dom') {
+    function updateProgress(count, phase = 'scrolling', source = 'dom', extra = {}) {
         const countEl = $('progressCountText');
         const phaseEl = $('progressPhaseText');
-        if (countEl) countEl.textContent = `${count.toLocaleString()} messages`;
-        if (phaseEl) {
-            if (phase === 'complete') {
-                phaseEl.textContent = 'Extraction complete';
-            } else if (phase === 'reading_database') {
-                phaseEl.textContent = 'Reading database…';
-            } else {
-                phaseEl.textContent = source === 'dom' ? 'Scrolling chat DOM…' : 'Reading database…';
+        const modelBadge = $('progressModelBadge');
+        const batchDetail = $('progressBatchDetail');
+        const barFill = $('progressBarFill');
+
+        if (countEl) countEl.textContent = `${count.toLocaleString()} items`;
+
+        if (phase === 'ai_captioning') {
+            const total = extra.total || count || 1;
+            const pct = Math.min(100, Math.round((count / total) * 100));
+            if (barFill) {
+                barFill.classList.remove('indeterminate');
+                barFill.style.width = `${pct}%`;
+            }
+
+            if (phaseEl) phaseEl.textContent = `AI Captioning (${count}/${total})`;
+            if (batchDetail) batchDetail.textContent = `4 imgs/call • ${pct}%`;
+
+            if (modelBadge) {
+                const selectedModel = $('aiModelSelect') ? $('aiModelSelect').value : '';
+                const modelName = extra.model || (selectedModel && selectedModel !== 'auto' ? selectedModel : 'gemini-3.5-flash-lite');
+                modelBadge.textContent = modelName.replace(/^models\//, '');
+                modelBadge.style.display = 'inline-block';
+            }
+        } else {
+            if (barFill) {
+                barFill.classList.add('indeterminate');
+                barFill.style.width = '';
+            }
+            if (modelBadge) modelBadge.style.display = 'none';
+            if (batchDetail) batchDetail.textContent = '';
+
+            if (phaseEl) {
+                if (phase === 'complete') {
+                    phaseEl.textContent = 'Extraction complete';
+                } else if (phase === 'reading_database') {
+                    phaseEl.textContent = 'Reading database…';
+                } else if (phase === 'capturing_thumbnails') {
+                    phaseEl.textContent = `Rendering thumbnails (${count})…`;
+                } else {
+                    phaseEl.textContent = source === 'dom' ? 'Scrolling chat DOM…' : 'Reading database…';
+                }
             }
         }
     }
@@ -367,7 +595,22 @@
 
     async function executeExtraction(intent = null, format = 'txt') {
         const mode = document.querySelector('input[name="extractMode"]:checked').value;
-        const payload = { action: 'extract_chat', mode, intent, format };
+        const selectedModel = $('aiModelSelect') ? $('aiModelSelect').value : 'auto';
+        const customPrompt = $('customAiPrompt') ? $('customAiPrompt').value.trim() : '';
+
+        const payload = {
+            action: 'extract_chat',
+            mode,
+            intent,
+            format,
+            captureThumbnails: $('toggleThumbnails').checked,
+            thumbnailSize: $('thumbnailResolution').value,
+            enableAiCaptions: $('toggleAiCaptions').checked,
+            geminiApiKey: $('geminiApiKey').value.trim(),
+            maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
+            model: selectedModel === 'auto' ? null : selectedModel,
+            customPrompt: customPrompt || null
+        };
 
         if (mode === 'date') {
             const startVal = $('startTime').value;
@@ -420,16 +663,16 @@
         const now = new Date();
         const exportDateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 
-        const mode = params.mode || document.querySelector('input[name="extractMode"]:checked')?.value || 'all';
+        const mode = params.mode || 'all';
         let scopeStr = 'All Messages';
         if (mode === 'date') {
-            const s = params.startTime || $('startTime').value;
-            const e = params.endTime || $('endTime').value;
-            const sFmt = s ? s.replace('T', ' ') : 'Start';
-            const eFmt = e ? e.replace('T', ' ') : 'End';
+            const s = params.startTime;
+            const e = params.endTime;
+            const sFmt = s ? new Date(s).toLocaleString() : 'Start';
+            const eFmt = e ? new Date(e).toLocaleString() : 'End';
             scopeStr = `Date Range (${sFmt} to ${eFmt})`;
         } else if (mode === 'count') {
-            const count = params.messageCount || $('messageCount').value || messages.length;
+            const count = params.messageCount || params.count || messages.length;
             scopeStr = `Last ${count} Messages`;
         } else {
             scopeStr = `All Messages (${messages.length.toLocaleString()})`;
@@ -458,12 +701,47 @@
             ''
         ].join('\n');
 
-        const body = valid.map(m => m.rawFormat || `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.sender}: ${m.content}`).join('\n');
+        const body = valid.map(m => {
+            let content = m.content || '';
+            if (m.aiCaption) {
+                content += ` [AI: "${m.aiCaption}"]`;
+            }
+            if (m.rawFormat) {
+                if (m.aiCaption) {
+                    return `${m.rawFormat} [AI: "${m.aiCaption}"]`;
+                }
+                return m.rawFormat;
+            }
+            return `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.sender}: ${content}`;
+        }).join('\n');
+
         return header + body;
     }
 
-    function formatAsJson(messages, meta) {
+    function cleanMessageForExport(m, params = {}) {
+        const includeThumbnails = params && params.captureThumbnails !== false;
+        const item = {
+            timestamp: m.timestamp,
+            sender: m.sender,
+            type: m.type,
+            content: m.content
+        };
+        // Always delete thumbnail after processed by AI, or if thumbnails disabled
+        if (includeThumbnails && m.thumbnail && !m.aiCaption) {
+            item.thumbnail = m.thumbnail;
+        }
+        if (m.aiCaption) {
+            item.aiCaption = m.aiCaption;
+        }
+        item.quotedMessage = m.quotedMessage || null;
+        item.mediaUrl = m.mediaUrl || null;
+        item.rawFormat = m.rawFormat;
+        return item;
+    }
+
+    function formatAsJson(messages, meta, params = {}) {
         const valid = (messages || []).filter(m => (m.content && m.content.trim() !== '') || m.mediaUrl);
+        const cleaned = valid.map(m => cleanMessageForExport(m, params));
         return JSON.stringify({
             metadata: {
                 chatName: meta.chatName,
@@ -471,9 +749,9 @@
                 exportTimestamp: meta.exportTimestamp,
                 scope: meta.scope,
                 scopeLabel: meta.scopeLabel,
-                totalMessages: valid.length
+                totalMessages: cleaned.length
             },
-            messages: valid
+            messages: cleaned
         }, null, 2);
     }
 
@@ -483,7 +761,8 @@
         return `"${str}"`;
     }
 
-    function formatAsCsv(messages, meta) {
+    function formatAsCsv(messages, meta, params = {}) {
+        const includeThumbnails = params && params.captureThumbnails !== false;
         const valid = (messages || []).filter(m => (m.content && m.content.trim() !== '') || m.mediaUrl);
         const metaComments = [
             `# WhatsApp Chat Export: ${meta.chatName}`,
@@ -491,13 +770,14 @@
             `# Scope: ${meta.scopeLabel} | Total Messages: ${valid.length}`
         ];
 
-        const headers = ['Timestamp', 'Date', 'Time', 'Sender', 'Type', 'Content', 'QuotedSender', 'QuotedContent', 'MediaURL'];
+        const headers = ['Timestamp', 'Date', 'Time', 'Sender', 'Type', 'Content', 'AICaption', 'Thumbnail', 'QuotedSender', 'QuotedContent', 'MediaURL'];
         const rows = valid.map(m => {
             const d = new Date(m.timestamp);
             const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
             const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
             const quotedSender = m.quotedMessage?.sender || '';
             const quotedContent = m.quotedMessage?.content || '';
+            const thumbnailVal = includeThumbnails ? (m.thumbnail || '') : '';
 
             return [
                 escapeCsvCell(m.timestamp),
@@ -506,6 +786,8 @@
                 escapeCsvCell(m.sender),
                 escapeCsvCell(m.type),
                 escapeCsvCell(m.content),
+                escapeCsvCell(m.aiCaption || ''),
+                escapeCsvCell(thumbnailVal),
                 escapeCsvCell(quotedSender),
                 escapeCsvCell(quotedContent),
                 escapeCsvCell(m.mediaUrl || '')
@@ -519,9 +801,9 @@
         const meta = buildExportMetadata(messages, params);
         switch (format) {
             case 'json':
-                return { text: formatAsJson(messages, meta), mime: 'application/json', ext: 'json' };
+                return { text: formatAsJson(messages, meta, params), mime: 'application/json', ext: 'json' };
             case 'csv':
-                return { text: formatAsCsv(messages, meta), mime: 'text/csv;charset=utf-8;', ext: 'csv' };
+                return { text: formatAsCsv(messages, meta, params), mime: 'text/csv;charset=utf-8;', ext: 'csv' };
             case 'txt':
             default:
                 return { text: formatAsTxt(messages, meta), mime: 'text/plain;charset=utf-8;', ext: 'txt' };
