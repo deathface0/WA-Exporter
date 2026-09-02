@@ -24,10 +24,15 @@
   * **Dynamic Model Fallback Cascade**: Prioritizes high-RPD models (`gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`) with automatic fallback to `gemini-3.7-flash` and others on 429/404 errors.
   * **Customizable Prompts**: Localized defaults with support for user-defined descriptive prompts.
   * **Key Validation & Safety**: Built-in RPM rate-limiting and API key status checker.
+* **AI Voice Note Transcription (Google Gemini)**:
+  * **Zero-Disk Blob Interception**: Automates the native decryption pipeline in the page context (`MAIN` world) to capture ephemeral voice note audio Blobs in-memory without spamming local downloads.
+  * **Speech-to-Text (STT) Processing**: Converts raw Opus/OGG audio streams to base64 and transcribes speech using Google Gemini models.
+  * **Duration-Aware**: Automatically protects API quotas by safely processing voice notes under 5 minutes.
+  * **Integrated Workflow**: Can be run concurrently or independently alongside image captioning with custom toggle controls.
 * **Multiple Export Formats**:
-  * **TXT**: Clean, chronological transcript with timestamps, senders, replies, media labels, and AI descriptions.
-  * **JSON**: Structured schema containing metadata, timestamps, senders, message types, thumbnails, AI captions, and reply trees.
-  * **CSV**: Tabular data ready for Excel, Sheets, and data pipelines (with dedicated `Thumbnail` and `AICaption` columns).
+  * **TXT**: Clean, chronological transcript with timestamps, senders, replies, media labels, image AI descriptions, and voice note transcriptions (`[Voice Note] [AI Transcript: "..."]`).
+  * **JSON**: Structured schema containing metadata, timestamps, senders, message types, thumbnails, AI captions, AI transcripts, and reply trees.
+  * **CSV**: Tabular data ready for Excel, Sheets, and data pipelines (with dedicated `Thumbnail`, `AICaption`, and `AITranscript` columns).
 * **Extraction Scope Options**:
   * **Date Range**: Filter messages between precise start and end dates/times.
   * **By Count**: Extract the latest *N* messages (e.g., 50, 100, 500, 3000+).
@@ -35,7 +40,7 @@
 * **Comprehensive Content Support**:
   * Text formatting, emojis, quoted replies, images, videos, GIFs, voice notes/audio, stickers, documents, polls, contacts (vCards), location links, and deleted/revoked messages.
 * **100% Client-Side Privacy**:
-  * All operations run strictly inside your browser. No data ever leaves your computer unless you explicitly enable Gemini AI captioning with your own API key.
+  * All operations run strictly inside your browser. No data ever leaves your computer unless you explicitly enable Gemini AI captioning or voice note transcription with your own API key.
 
 ---
 
@@ -48,9 +53,9 @@ WA-Exporter/
 ├── README.md                      # Documentation
 ├── .gitignore                     # Git ignore rules
 ├── ai/
-│   └── gemini.js                  # Batched Gemini vision client, model cascade & rate limiter
+│   └── gemini.js                  # Batched Gemini vision & audio STT client, model cascade & rate limiter
 ├── db/
-│   ├── page-script.js             # MAIN-world IndexedDB & thumbnail canvas engine
+│   ├── page-script.js             # MAIN-world IndexedDB, audio blob interceptor & canvas engine
 │   └── bridge.js                  # Content-script postMessage bridge
 ├── extraction/
 │   ├── selectors.js               # WhatsApp Web DOM selectors

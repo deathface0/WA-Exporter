@@ -688,6 +688,22 @@
         return parsedData;
     }
 
+    function captureAudioBlob(parsedData, blobUrl) {
+        if (!blobUrl) return;
+        fetch(blobUrl)
+            .then(res => res.blob())
+            .then(blob => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    if (reader.result && reader.result.startsWith('data:')) {
+                        parsedData.audioData = reader.result;
+                    }
+                };
+                reader.readAsDataURL(blob);
+            })
+            .catch(() => {});
+    }
+
     function parseAudioMessage(msgEl) {
         const audio = msgEl.querySelector(SELECTORS.mediaAudio || '[data-testid="audio-player"]');
         const hasAudioIcon = msgEl.querySelector('[data-icon*="ptt"], [data-icon*="audio"], [data-testid="audio-player"]') !== null;
@@ -696,11 +712,73 @@
         const isPTT = msgEl.querySelector('[data-icon*="ptt"], [data-testid*="ptt"]') !== null;
         const tag = isPTT ? '[Voice Note]' : '[Audio]';
 
-        return {
+        let audioBlobUrl = null;
+        const audioEl = msgEl.querySelector('audio[src^="blob:"], audio source[src^="blob:"]');
+        if (audioEl) {
+            audioBlobUrl = audioEl.src || audioEl.getAttribute('src');
+        }
+        if (!audioBlobUrl) {
+            const anyAudio = msgEl.querySelector('audio[src]');
+            if (anyAudio && anyAudio.src && anyAudio.src.startsWith('blob:')) {
+                audioBlobUrl = anyAudio.src;
+            }
+        }
+        
+        // Aggressive fallback 1: scan the innerHTML for any blob URL
+        if (!audioBlobUrl && isPTT) {
+            const blobMatch = msgEl.innerHTML.match(/blob:https?:\/\/[^\s"']+/);
+            if (blobMatch) {
+                audioBlobUrl = blobMatch[0];
+            }
+        }
+
+        // Aggressive fallback 2: React Fiber state traversal
+        if (!audioBlobUrl && isPTT) {
+            try {
+                const fiberKey = Object.keys(msgEl).find(k => k.startsWith('__reactFiber$'));
+                if (fiberKey) {
+                    let node = msgEl[fiberKey];
+                    for (let i = 0; i < 20 && node; i++) {
+                        const props = node.memoizedProps || node.pendingProps;
+                        if (props && (props.message || props.msg)) {
+                            const msgObj = props.message || props.msg;
+                            if (msgObj.mediaData && msgObj.mediaData.renderableUrl) {
+                                audioBlobUrl = msgObj.mediaData.renderableUrl;
+                            } else if (msgObj.mediaData && msgObj.mediaData.mediaBlob) {
+                                audioBlobUrl = msgObj.mediaData.mediaBlob._url || msgObj.mediaData.mediaBlob.url;
+                            }
+                        }
+                        node = node.return;
+                    }
+                }
+            } catch (e) { }
+        }
+
+        if (audioBlobUrl) {
+            console.log('[WA-Exporter] Successfully found audio blob URL for Voice Note:', audioBlobUrl);
+        } else {
+            console.warn('[WA-Exporter] Could not find audio blob URL for Voice Note');
+        }
+
+        let durationSeconds = null;
+        const durationMatch = (msgEl.textContent || '').match(/\b(\d{1,2}):(\d{2})\b/);
+        if (durationMatch) {
+            durationSeconds = parseInt(durationMatch[1], 10) * 60 + parseInt(durationMatch[2], 10);
+        }
+
+        const parsedData = {
             type: isPTT ? 'ptt' : 'audio',
             content: tag,
-            mediaUrl: null
+            duration: durationSeconds,
+            mediaUrl: null,
+            audioBlobUrl: audioBlobUrl
         };
+
+        if (audioBlobUrl) {
+            captureAudioBlob(parsedData, audioBlobUrl);
+        }
+
+        return parsedData;
     }
 
     function parseContactMessage(msgEl) {

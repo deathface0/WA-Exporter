@@ -30,7 +30,7 @@
         try {
             storage = await browser.storage.local.get([
                 'startTime', 'endTime', 'extractMode', 'exportFormat', 'messageCount',
-                'captureThumbnails', 'thumbnailResolution', 'enableAiCaptions', 'geminiApiKey', 'maxAiRequests', 'advancedExpanded',
+                'captureThumbnails', 'thumbnailResolution', 'enableAiCaptions', 'enableAiTranscription', 'geminiApiKey', 'maxAiRequests', 'advancedExpanded',
                 'aiModelPreference', 'customAiPrompt', 'promptExpanded'
             ]);
         } catch (e) { }
@@ -58,6 +58,9 @@
         }
         if (storage.enableAiCaptions !== undefined) {
             $('toggleAiCaptions').checked = !!storage.enableAiCaptions;
+        }
+        if (storage.enableAiTranscription !== undefined && $('toggleAiTranscription')) {
+            $('toggleAiTranscription').checked = !!storage.enableAiTranscription;
         }
         if (storage.geminiApiKey) {
             $('geminiApiKey').value = storage.geminiApiKey;
@@ -176,11 +179,20 @@
             invalidateCache();
         });
 
-        $('toggleAiCaptions').addEventListener('change', (e) => {
-            browser.storage.local.set({ enableAiCaptions: e.target.checked });
-            toggleAdvancedSections();
-            invalidateCache();
-        });
+        if ($('toggleAiCaptions')) {
+            $('toggleAiCaptions').addEventListener('change', (e) => {
+                browser.storage.local.set({ enableAiCaptions: e.target.checked });
+                toggleAdvancedSections();
+                invalidateCache();
+            });
+        }
+
+        if ($('toggleAiTranscription')) {
+            $('toggleAiTranscription').addEventListener('change', (e) => {
+                browser.storage.local.set({ enableAiTranscription: e.target.checked });
+                invalidateCache();
+            });
+        }
 
         $('geminiApiKey').addEventListener('input', (e) => {
             browser.storage.local.set({ geminiApiKey: e.target.value.trim() });
@@ -303,6 +315,7 @@
             captureThumbnails: $('toggleThumbnails').checked,
             thumbnailSize: $('thumbnailResolution').value,
             enableAiCaptions: $('toggleAiCaptions').checked,
+            enableAiTranscription: $('toggleAiTranscription') ? $('toggleAiTranscription').checked : true,
             geminiApiKey: $('geminiApiKey').value.trim(),
             maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
             model: selectedModel === 'auto' ? null : selectedModel,
@@ -317,6 +330,7 @@
         if (p1.captureThumbnails !== p2.captureThumbnails) return false;
         if (p1.thumbnailSize !== p2.thumbnailSize) return false;
         if (p1.enableAiCaptions !== p2.enableAiCaptions) return false;
+        if (p1.enableAiTranscription !== p2.enableAiTranscription) return false;
         if (p1.geminiApiKey !== p2.geminiApiKey) return false;
         if (p1.maxAiRequests !== p2.maxAiRequests) return false;
         if (p1.model !== p2.model) return false;
@@ -552,7 +566,7 @@
 
         if (countEl) countEl.textContent = `${count.toLocaleString()} items`;
 
-        if (phase === 'ai_captioning') {
+        if (phase === 'ai_captioning' || phase === 'ai_transcription') {
             const total = extra.total || count || 1;
             const pct = Math.min(100, Math.round((count / total) * 100));
             if (barFill) {
@@ -560,13 +574,14 @@
                 barFill.style.width = `${pct}%`;
             }
 
-            if (phaseEl) phaseEl.textContent = `AI Captioning (${count}/${total})`;
-            if (batchDetail) batchDetail.textContent = `4 imgs/call • ${pct}%`;
+            const isAudio = phase === 'ai_transcription';
+            if (phaseEl) phaseEl.textContent = isAudio ? `AI Transcription (${count}/${total})` : `AI Captioning (${count}/${total})`;
+            if (batchDetail) batchDetail.textContent = isAudio ? `Audio STT • ${pct}%` : `4 imgs/call • ${pct}%`;
 
             if (modelBadge) {
                 const selectedModel = $('aiModelSelect') ? $('aiModelSelect').value : '';
                 const modelName = extra.model || (selectedModel && selectedModel !== 'auto' ? selectedModel : 'gemini-3.5-flash-lite');
-                
+
                 // If model changed (fallback), trigger pulse animation
                 if (modelBadge.dataset.currentModel && modelBadge.dataset.currentModel !== modelName) {
                     modelBadge.classList.remove('pulsing');
@@ -574,7 +589,7 @@
                     modelBadge.classList.add('pulsing');
                 }
                 modelBadge.dataset.currentModel = modelName;
-                
+
                 modelBadge.textContent = modelName.replace(/^models\//, '');
                 modelBadge.style.display = 'inline-block';
             }
@@ -628,6 +643,7 @@
             captureThumbnails: $('toggleThumbnails').checked,
             thumbnailSize: $('thumbnailResolution').value,
             enableAiCaptions: $('toggleAiCaptions').checked,
+            enableAiTranscription: $('toggleAiTranscription') ? $('toggleAiTranscription').checked : true,
             geminiApiKey: $('geminiApiKey').value.trim(),
             maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
             model: selectedModel === 'auto' ? null : selectedModel,
@@ -728,11 +744,14 @@
             if (m.aiCaption) {
                 content += ` [AI: "${m.aiCaption}"]`;
             }
+            if (m.aiTranscript) {
+                content += ` [AI Transcript: "${m.aiTranscript}"]`;
+            }
             if (m.rawFormat) {
-                if (m.aiCaption) {
-                    return `${m.rawFormat} [AI: "${m.aiCaption}"]`;
-                }
-                return m.rawFormat;
+                let text = m.rawFormat;
+                if (m.aiCaption) text += ` [AI: "${m.aiCaption}"]`;
+                if (m.aiTranscript) text += ` [AI Transcript: "${m.aiTranscript}"]`;
+                return text;
             }
             return `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.sender}: ${content}`;
         }).join('\n');
@@ -754,6 +773,9 @@
         }
         if (m.aiCaption) {
             item.aiCaption = m.aiCaption;
+        }
+        if (m.aiTranscript) {
+            item.aiTranscript = m.aiTranscript;
         }
         item.quotedMessage = m.quotedMessage || null;
         item.mediaUrl = m.mediaUrl || null;
@@ -792,7 +814,7 @@
             `# Scope: ${meta.scopeLabel} | Total Messages: ${valid.length}`
         ];
 
-        const headers = ['Timestamp', 'Date', 'Time', 'Sender', 'Type', 'Content', 'AICaption', 'Thumbnail', 'QuotedSender', 'QuotedContent', 'MediaURL'];
+        const headers = ['Timestamp', 'Date', 'Time', 'Sender', 'Type', 'Content', 'AICaption', 'AITranscript', 'Thumbnail', 'QuotedSender', 'QuotedContent', 'MediaURL'];
         const rows = valid.map(m => {
             const d = new Date(m.timestamp);
             const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -809,6 +831,7 @@
                 escapeCsvCell(m.type),
                 escapeCsvCell(m.content),
                 escapeCsvCell(m.aiCaption || ''),
+                escapeCsvCell(m.aiTranscript || ''),
                 escapeCsvCell(thumbnailVal),
                 escapeCsvCell(quotedSender),
                 escapeCsvCell(quotedContent),

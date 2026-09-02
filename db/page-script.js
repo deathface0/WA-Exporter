@@ -4,6 +4,20 @@
     if (window.__waPageScriptInjected) return;
     window.__waPageScriptInjected = true;
 
+    // 1. Setup Blob interceptor
+    if (!window.__waExpOriginalClick) {
+        window.__waExpOriginalClick = HTMLAnchorElement.prototype.click;
+        HTMLAnchorElement.prototype.click = function () {
+            if (this.download && this.href && this.href.startsWith('blob:')) {
+                console.log("[WA-Exporter Page Script] Intercepted Audio Blob URL:", this.href);
+                window.__waExpLastInterceptedBlob = this.href;
+                return; // Cancel the actual download
+            }
+            return window.__waExpOriginalClick.apply(this, arguments);
+        };
+        console.log("[WA-Exporter Page Script] Blob Interceptor Injected Successfully.");
+    }
+
     async function getActiveChatId(db) {
         // METHOD 1: React Fiber on conversation header (Fastest & direct)
         try {
@@ -175,6 +189,126 @@
 
                 window.postMessage({ __waExp: callbackId, result: results }, '*');
             } catch (err) {
+                window.postMessage({ __waExp: callbackId, error: err.message }, '*');
+            }
+            return;
+        }
+
+        if (action === 'extract_audio_blob') {
+            console.log('[WA-Exporter Page Script] Received extract_audio_blob for messageId:', params?.messageId);
+            try {
+                const messageId = params?.messageId;
+                let blobUrl = null;
+                if (messageId) {
+                    const msgEl = document.querySelector(`[data-id="${messageId}"]`);
+                    console.log('[WA-Exporter Page Script] msgEl found:', !!msgEl);
+                    if (msgEl) {
+                        window.__waExpLastInterceptedBlob = null;
+
+                        // Helper function to wait for an element to appear in the DOM
+                        const waitForElement = async (container, selector, maxWaitMs = 1500) => {
+                            const startTime = Date.now();
+                            while (Date.now() - startTime < maxWaitMs) {
+                                const el = container.querySelector(selector) || container.parentElement?.querySelector(selector);
+                                if (el) return el;
+                                await new Promise(resolve => setTimeout(resolve, 50));
+                            }
+                            return null;
+                        };
+
+                        // Dispatch right-click to open the context menu directly!
+                        // Target the innermost message container so we don't click empty space
+                        const clickTarget = msgEl.querySelector('[data-testid="msg-container"]') || msgEl.firstChild || msgEl;
+                        console.log('[WA-Exporter Page Script] Dispatching contextmenu event on target:', clickTarget.tagName);
+
+                        // Scroll into view so getBoundingClientRect() returns valid screen coordinates
+                        clickTarget.scrollIntoView({ behavior: 'instant', block: 'center' });
+                        await new Promise(r => setTimeout(r, 150));
+
+                        const rect = clickTarget.getBoundingClientRect();
+                        const cx = rect.x + (rect.width / 2);
+                        const cy = rect.y + (rect.height / 2);
+                        const eventOpts = {
+                            bubbles: true, cancelable: true, view: window,
+                            button: 2, buttons: 2, clientX: cx, clientY: cy
+                        };
+
+                        // Full modern web app right-click sequence
+                        clickTarget.dispatchEvent(new PointerEvent('pointerdown', eventOpts));
+                        clickTarget.dispatchEvent(new MouseEvent('mousedown', eventOpts));
+                        clickTarget.dispatchEvent(new PointerEvent('pointerup', eventOpts));
+                        clickTarget.dispatchEvent(new MouseEvent('mouseup', eventOpts));
+                        clickTarget.dispatchEvent(new MouseEvent('contextmenu', eventOpts));
+
+                        // Wait for any dropdown/menu list to render anywhere in the body
+                        const dropdownSelector = 'ul, [data-testid="dropdown-list"], [role="menu"]';
+                        const dropdownItemFound = await waitForElement(document.body, dropdownSelector, 1500);
+
+                        if (!dropdownItemFound) {
+                            console.log('[WA-Exporter Page Script] Dropdown menu items failed to render after contextmenu.');
+                        } else {
+                            // Find the "Download" button by scanning text inside all reasonable clickable elements
+                            // We filter out any elements that belong to the chat message itself
+                            const possibleItems = Array.from(document.querySelectorAll('div, li, span, button')).filter(el => {
+                                const text = el.innerText || el.getAttribute('aria-label') || "";
+                                return text.match(/Download|Descargar|Baixar/i) && !msgEl.contains(el);
+                            });
+
+                            console.log('[WA-Exporter Page Script] possible download items found:', possibleItems.length);
+
+                            let downloadClicked = false;
+
+                            // Iterate backwards to click the most deeply nested target (the actual button, not its wrapper container)
+                            for (let i = possibleItems.length - 1; i >= 0; i--) {
+                                const item = possibleItems[i];
+                                // Ensure it's inside a menu to avoid clicking random UI elements
+                                if (item.closest('ul') || item.closest('[role="menu"]') || item.closest('[role="application"]')) {
+                                    item.click();
+                                    console.log('[WA-Exporter Page Script] Download button clicked!');
+                                    downloadClicked = true;
+                                    break;
+                                }
+                            }
+
+                            if (!downloadClicked) {
+                                console.log('[WA-Exporter Page Script] Download button NOT found, closing menu.');
+                                document.body.click();
+                            } else {
+                                await new Promise(r => setTimeout(r, 250));
+                                const interceptedUrl = window.__waExpLastInterceptedBlob || null;
+                                if (interceptedUrl) {
+                                    try {
+                                        console.log('[WA-Exporter Page Script] Fetching intercepted blob URL...');
+                                        const res = await fetch(interceptedUrl);
+                                        const blob = await res.blob();
+                                        blobUrl = await new Promise((resolve) => {
+                                            const reader = new FileReader();
+                                            reader.onloadend = () => resolve(reader.result);
+                                            reader.readAsDataURL(blob);
+                                        });
+                                        console.log('[WA-Exporter Page Script] Successfully converted intercepted blob to Base64!');
+                                    } catch (e) {
+                                        console.error('[WA-Exporter Page Script] Failed to fetch and convert intercepted blob:', e);
+                                        blobUrl = interceptedUrl; // Fallback just in case
+                                    }
+                                }
+                            }
+                        }
+
+                        // Remove focus/hover from the message to clean up the UI
+                        msgEl.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true, cancelable: true }));
+                        const msgContainer = msgEl.querySelector('[data-testid="msg-container"]');
+                        if (msgContainer) msgContainer.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true, cancelable: true }));
+                    }
+                }
+
+                // Truncate for logging so we don't spam the console with Base64 strings
+                const logUrl = blobUrl?.length > 100 ? blobUrl.substring(0, 50) + '... (Base64)' : blobUrl;
+                console.log('[WA-Exporter Page Script] Sending back result:', logUrl);
+
+                window.postMessage({ __waExp: callbackId, result: blobUrl }, '*');
+            } catch (err) {
+                console.error('[WA-Exporter Page Script] Error in extract_audio_blob:', err);
                 window.postMessage({ __waExp: callbackId, error: err.message }, '*');
             }
             return;

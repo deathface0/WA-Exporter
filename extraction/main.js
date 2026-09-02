@@ -300,6 +300,7 @@
         }
 
         // 2. Gemini AI Captioning Pipeline
+        let processedCaptions = 0;
         if (shouldRunAi) {
             try {
                 broadcastProgress(0, 'ai_captioning', 'ai', { total: 0, model: request.model || null });
@@ -311,18 +312,92 @@
                 }, (curr, total, phaseLabel, activeModel) => {
                     broadcastProgress(curr, 'ai_captioning', 'ai', { total: total, model: activeModel || request.model || null });
                 });
+                processedCaptions = messages.filter(m => m && m.aiCaption).length;
             } catch (aiErr) {
                 console.warn('[WA-Exporter] AI captioning encountered an error:', aiErr.message);
             }
         }
 
-        // Clean up internal properties: delete thumbnail after processed by AI, or if thumbnails disabled
+        // 2.5 Late Audio Capture Pipeline
+        const audioItems = messages.map((m, idx) => ({ key: idx, msg: m }))
+            .filter(item => item.msg && ['ptt', 'audio'].includes(item.msg.type) && !item.msg.audioData);
+
+        if (audioItems.length > 0) {
+            console.log(`[WA-Exporter] 🎤 Processing late capture for ${audioItems.length} audio items...`);
+            await Promise.all(audioItems.map(async (item) => {
+                try {
+                    let targetUrl = item.msg.audioBlobUrl;
+                    
+                    // If no blob URL from DOM, try querying the React Fiber from the MAIN world via bridge
+                    if (!targetUrl && item.msg.id && window.WAExporter.queryDB) {
+                        try {
+                            const dbResult = await window.WAExporter.queryDB('extract_audio_blob', { messageId: item.msg.id }, 2500);
+                            if (dbResult) {
+                                targetUrl = dbResult;
+                                item.msg.audioBlobUrl = dbResult; // store it for future
+                                console.log('[WA-Exporter] Retrieved audio blob URL via queryDB:', targetUrl);
+                            }
+                        } catch (dbErr) {
+                            console.warn('[WA-Exporter] Failed to get audio blob from queryDB:', dbErr);
+                        }
+                    }
+
+                    if (!targetUrl) {
+                        return; // Still no URL, give up
+                    }
+
+                    let base64 = null;
+                    if (targetUrl.startsWith('data:')) {
+                        base64 = targetUrl;
+                    } else {
+                        const blob = await fetch(targetUrl).then(r => r.blob());
+                        base64 = await new Promise((resolve) => {
+                            const reader = new FileReader();
+                            reader.onloadend = () => resolve(reader.result);
+                            reader.readAsDataURL(blob);
+                        });
+                    }
+                    if (base64 && base64.startsWith('data:')) {
+                        item.msg.audioData = base64;
+                    }
+                } catch (e) {
+                    console.warn('[WA-Exporter] Audio blob fetch failed:', e);
+                }
+            }));
+        }
+
+        // 3. Gemini AI Voice Note Transcription Pipeline
+        const shouldRunTranscription = request && request.enableAiTranscription && request.geminiApiKey && window.WAExporter.Gemini;
+        if (shouldRunTranscription) {
+            try {
+                const totalQuota = parseInt(request.maxAiRequests, 10) || 50;
+                const remainingQuota = Math.max(0, totalQuota - processedCaptions);
+                if (remainingQuota > 0) {
+                    broadcastProgress(0, 'ai_transcription', 'ai', { total: 0, model: request.model || null });
+                    await window.WAExporter.Gemini.processMessageTranscriptions(messages, {
+                        apiKey: request.geminiApiKey,
+                        maxRequests: remainingQuota,
+                        model: request.model || null
+                    }, (curr, total, phaseLabel, activeModel) => {
+                        broadcastProgress(curr, 'ai_transcription', 'ai', { total: total, model: activeModel || request.model || null });
+                    });
+                } else {
+                    console.log('[WA-Exporter] ℹ️ Max AI quota reached by image captions. Skipping voice transcription.');
+                }
+            } catch (trErr) {
+                console.warn('[WA-Exporter] AI transcription encountered an error:', trErr.message);
+            }
+        }
+
+        // Clean up internal properties: delete thumbnail and audioData after processed
         messages.forEach(m => {
             if (m) {
                 if (shouldRunAi || !shouldCaptureThumbnails) {
                     delete m.thumbnail;
                 }
                 delete m.blobUrl;
+                delete m.audioData;
+                delete m.audioBlobUrl;
             }
         });
 
@@ -417,16 +492,19 @@
         ].join('\n');
 
         const body = valid.map(m => {
-            let content = m.content || '';
+            let extra = '';
             if (m.aiCaption) {
-                content += ` [AI: "${m.aiCaption}"]`;
+                extra += ` [AI: "${m.aiCaption}"]`;
             }
+            if (m.aiTranscript) {
+                extra += ` [Transcript: "${m.aiTranscript}"]`;
+            }
+
             if (m.rawFormat) {
-                if (m.aiCaption) {
-                    return `${m.rawFormat} [AI: "${m.aiCaption}"]`;
-                }
-                return m.rawFormat;
+                return `${m.rawFormat}${extra}`;
             }
+
+            let content = (m.content || '') + extra;
             return `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.sender}: ${content}`;
         }).join('\n');
 
@@ -447,6 +525,9 @@
         }
         if (m.aiCaption) {
             item.aiCaption = m.aiCaption;
+        }
+        if (m.aiTranscript) {
+            item.aiTranscript = m.aiTranscript;
         }
         item.quotedMessage = m.quotedMessage || null;
         item.mediaUrl = m.mediaUrl || null;
@@ -485,7 +566,7 @@
             `# Scope: ${meta.scopeLabel} | Total Messages: ${valid.length}`
         ];
 
-        const headers = ['Timestamp', 'Date', 'Time', 'Sender', 'Type', 'Content', 'AICaption', 'Thumbnail', 'QuotedSender', 'QuotedContent', 'MediaURL'];
+        const headers = ['Timestamp', 'Date', 'Time', 'Sender', 'Type', 'Content', 'AICaption', 'AITranscript', 'Thumbnail', 'QuotedSender', 'QuotedContent', 'MediaURL'];
         const rows = valid.map(m => {
             const d = new Date(m.timestamp);
             const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -502,6 +583,7 @@
                 escapeCsvCell(m.type),
                 escapeCsvCell(m.content),
                 escapeCsvCell(m.aiCaption || ''),
+                escapeCsvCell(m.aiTranscript || ''),
                 escapeCsvCell(thumbnailVal),
                 escapeCsvCell(quotedSender),
                 escapeCsvCell(quotedContent),

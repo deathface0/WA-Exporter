@@ -10,36 +10,24 @@
     let pageScriptInjected = false;
 
     async function ensurePageScript() {
-        if (pageScriptInjected || document.getElementById('wa-exporter-page-script')) {
-            pageScriptInjected = true;
-            return;
+        if (pageScriptInjected) return;
+
+        const oldScript = document.getElementById('wa-exporter-page-script');
+        if (oldScript) {
+            oldScript.remove();
         }
 
         try {
-            // Method 1: Fetch script content and inject as textContent to avoid CSP external script restrictions
-            const scriptUrl = browser.runtime.getURL('db/page-script.js');
-            const response = await fetch(scriptUrl);
-            const scriptContent = await response.text();
-
             const script = document.createElement('script');
             script.id = 'wa-exporter-page-script';
-            script.textContent = scriptContent;
+            script.src = browser.runtime.getURL('db/page-script.js') + '?t=' + Date.now();
+            script.onload = () => {
+                pageScriptInjected = true;
+                console.log('[WA-Exporter Bridge] page-script.js loaded successfully');
+            };
             (document.head || document.documentElement).appendChild(script);
-            script.remove();
-            pageScriptInjected = true;
         } catch (e) {
-            // Method 2: Fallback to direct script src injection
-            try {
-                const script = document.createElement('script');
-                script.id = 'wa-exporter-page-script';
-                script.src = browser.runtime.getURL('db/page-script.js');
-                script.onload = () => {
-                    pageScriptInjected = true;
-                };
-                (document.head || document.documentElement).appendChild(script);
-            } catch (err) {
-                console.warn('[WA-Exporter Bridge] Failed to inject page-script.js:', err);
-            }
+            console.warn('[WA-Exporter Bridge] Failed to inject page-script.js:', e);
         }
     }
 
@@ -50,7 +38,7 @@
             const callbackId = 'cb_' + Math.random().toString(36).slice(2, 10) + Date.now();
 
             const handler = (event) => {
-                if (event.source !== window || !event.data || event.data.__waExp !== callbackId) return;
+                if (!event.data || event.data.__waExp !== callbackId) return;
                 window.removeEventListener('message', handler);
                 clearTimeout(timerId);
 

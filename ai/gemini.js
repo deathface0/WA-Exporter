@@ -488,13 +488,198 @@
         return messages;
     }
 
+    /**
+     * Gets a localized prompt for voice note transcription.
+     */
+    function getLocalizedTranscriptPrompt() {
+        const lang = (navigator.language || 'en').toLowerCase();
+        if (lang.startsWith('es')) {
+            return 'Transcribe este audio de WhatsApp literalmente en su idioma original. Responde SOLO con la transcripción del habla, sin introducciones, timestamps, ni comentarios. Si el audio está vacío o es inaudible, responde "inaudible".';
+        } else if (lang.startsWith('fr')) {
+            return 'Transcrivez ce message vocal WhatsApp mot à mot dans sa langue originale. Répondez UNIQUEMENT avec la transcription, sans introduction, horodatage ou commentaire. Si l\'audio est vide ou inaudible, répondez "inaudible".';
+        } else if (lang.startsWith('de')) {
+            return 'Transkribieren Sie diese WhatsApp-Sprachnachricht wörtlich in der Originalsprache. Antworten Sie NUR mit der Transkription, ohne Einleitung, Zeitstempel oder Kommentare. Wenn der Ton leer oder unhörbar ist, antworten Sie "unhörbar".';
+        } else if (lang.startsWith('pt')) {
+            return 'Transcreva este áudio do WhatsApp literalmente no idioma original. Responda APENAS com a transcrição, sem introduções, timestamps ou comentários. Se o áudio estiver vazio ou inaudível, responda "inaudível".';
+        } else if (lang.startsWith('it')) {
+            return 'Trascrivi questo messaggio vocale WhatsApp letteralmente nella lingua originale. Rispondi SOLO con la trascrizione, senza introduzioni, timestamp o commenti. Se l\'audio è vuoto o inudibile, rispondi "inudibile".';
+        }
+        return 'Transcribe this WhatsApp voice note verbatim in its original language. Respond ONLY with the speech transcript, no introductions, no timestamps, no extra commentary. If the audio is empty or inaudible, respond "inaudible".';
+    }
+
+    /**
+     * Generates a transcript for a single audio message.
+     */
+    async function generateAudioTranscript(apiKey, base64AudioDataUri, modelName = null, retries = 3) {
+        if (!apiKey || !base64AudioDataUri) return null;
+
+        const uriParts = base64AudioDataUri.split(';base64,');
+        if (uriParts.length !== 2) return null;
+
+        // E.g. "data:audio/ogg; codecs=opus" -> "audio/ogg" (or we can just keep the whole mime string, Gemini accepts it)
+        const mimeType = uriParts[0].replace(/^data:/, '').trim();
+        const base64Data = uriParts[1];
+        const prompt = getLocalizedTranscriptPrompt();
+        let activeModel = modelName || await getOrDiscoverModel(apiKey) || 'gemini-3.5-flash-lite';
+
+        const parts = [
+            { text: prompt },
+            { inlineData: { mimeType: mimeType, data: base64Data } }
+        ];
+
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+                minRequestIntervalMs = getRateLimitForModel(activeModel);
+                await enforceRateLimit();
+
+                const generationConfig = {
+                    maxOutputTokens: 4096,
+                    temperature: 0.1
+                };
+
+                if (activeModel && (activeModel.includes('3.7') || activeModel.includes('thinking'))) {
+                    generationConfig.thinkingConfig = { thinkingBudget: 0 };
+                }
+
+                const payload = {
+                    contents: [{ parts: parts }],
+                    generationConfig: generationConfig
+                };
+
+                const cleanModel = activeModel.startsWith('models/') ? activeModel : `models/${activeModel}`;
+                const endpoint = `${GEMINI_API_BASE}/${cleanModel}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
+                const res = await safeGeminiFetch(endpoint, 'POST', payload);
+
+                if (res.status === 200 && res.data) {
+                    const candidate = res.data?.candidates?.[0];
+                    const rawParts = candidate?.content?.parts || [];
+                    const visibleText = rawParts.filter(p => !p.thought && p.text).map(p => p.text).join('\n');
+                    const rawText = (visibleText || rawParts.map(p => p.text).filter(Boolean).join('\n') || '').trim();
+
+                    if (!rawText || /^inaudib/i.test(rawText)) {
+                        return null;
+                    }
+
+                    return rawText.replace(/^["'«"]+|["'»"]+$/g, '').replace(/\n+/g, ' ').trim();
+                }
+
+                if (res.status === 404) {
+                    const nextModel = getNextModel(activeModel);
+                    if (nextModel) {
+                        console.log(`[WA-Exporter Gemini] 🔄 Transcript fallback: '${activeModel}' → '${nextModel}'`);
+                        activeModel = nextModel;
+                        discoveredModel = nextModel;
+                        minRequestIntervalMs = getRateLimitForModel(nextModel);
+                        continue;
+                    }
+                }
+
+                if (res.status === 429) {
+                    const nextModel = getNextModel(activeModel);
+                    if (nextModel) {
+                        console.warn(`[WA-Exporter Gemini] ⚠️ 429 on transcript for '${activeModel}'. Switching to '${nextModel}'...`);
+                        activeModel = nextModel;
+                        discoveredModel = nextModel;
+                        minRequestIntervalMs = getRateLimitForModel(nextModel);
+                        await sleep(1000);
+                        continue;
+                    } else {
+                        await sleep(15000);
+                        continue;
+                    }
+                }
+
+                if (res.status >= 500) {
+                    await sleep(4000);
+                    continue;
+                }
+
+                console.warn(`[WA-Exporter Gemini] Transcript request failed (${res.status}):`, res.error || res.data);
+                return null;
+            } catch (e) {
+                if (attempt === retries) {
+                    console.warn('[WA-Exporter Gemini] Error generating transcript:', e.message);
+                    return null;
+                }
+                await sleep(2000);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Batch processes messages to generate AI transcripts for voice notes.
+     * Each voice note is sent individually (audio can't be batched).
+     */
+    async function processMessageTranscriptions(messages, config = {}, onProgress = null) {
+        const apiKey = config.apiKey;
+        if (!apiKey) return messages;
+
+        const maxRequests = parseInt(config.maxRequests, 10) || 50;
+        let model = config.model || await getOrDiscoverModel(apiKey);
+
+        const eligible = (messages || []).filter(m =>
+            m && m.audioData &&
+            ['ptt', 'audio'].includes(m.type) &&
+            !m.aiTranscript &&
+            (!m.duration || m.duration <= 300)
+        );
+
+        const skippedLong = (messages || []).filter(m =>
+            m && m.audioData &&
+            ['ptt', 'audio'].includes(m.type) &&
+            !m.aiTranscript &&
+            m.duration && m.duration > 300
+        );
+        if (skippedLong.length > 0) {
+            console.log(`[WA-Exporter Gemini] ⏭️ Skipped ${skippedLong.length} voice notes longer than 5 minutes.`);
+        }
+
+        if (eligible.length === 0) return messages;
+
+        const toProcess = eligible.slice(0, maxRequests);
+        const total = toProcess.length;
+
+        console.log(`[WA-Exporter Gemini] 🎤 Starting AI transcription for ${total} voice notes (max 5 min each) using '${model}'...`);
+
+        let processedTotal = 0;
+
+        for (let i = 0; i < total; i++) {
+            const m = toProcess[i];
+
+            if (onProgress) {
+                onProgress(i + 1, total, `AI Transcription (${i + 1}/${total})`, discoveredModel || model);
+            }
+
+            const transcript = await generateAudioTranscript(apiKey, m.audioData, model);
+
+            if (discoveredModel && discoveredModel !== model) {
+                model = discoveredModel;
+            }
+
+            if (transcript) {
+                m.aiTranscript = transcript;
+                processedTotal++;
+                const preview = transcript.length > 60 ? transcript.substring(0, 60) + '…' : transcript;
+                console.log(`[WA-Exporter Gemini] 🎤 [${processedTotal}/${total}] TRANSCRIPT: "${preview}"`);
+            }
+        }
+
+        console.log(`[WA-Exporter Gemini] ✅ Finished AI transcription (${processedTotal}/${total} processed).`);
+        return messages;
+    }
+
     window.WAExporter.Gemini = {
         validateApiKey,
         generateImageCaption,
         generateBatchCaptions,
         processMessageCaptions,
+        generateAudioTranscript,
+        processMessageTranscriptions,
         getLocalizedPrompt,
         getLocalizedBatchPrompt,
+        getLocalizedTranscriptPrompt,
         getOrDiscoverModel
     };
 })();
