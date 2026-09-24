@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <title>WA Web Chat Exporter</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <div class="header">
+        <h3><span>💬</span> WA Chat Exporter</h3>
+        <span class="version-badge">v2.0</span>
+    </div>
+
+    <!-- Chat insight badge -->
+    <div id="chatInsight" class="loading">
+        <span class="insight-icon">⏳</span>
+        <div class="insight-details">
+            <div id="chatNameBadge" class="chat-name-badge" style="display: none;">
+                <span class="chat-label">Chat:</span>
+                <span id="activeChatName" class="chat-title-text"></span>
+            </div>
+            <span id="insightText">Detecting chat…</span>
+        </div>
+    </div>
+
+    <!-- Extraction range mode -->
+    <span class="section-label">Extraction Scope</span>
+    <div class="segmented-control">
+        <label>
+            <input type="radio" name="extractMode" value="date" checked>
+            <span class="pill">Date Range</span>
+        </label>
+        <label>
+            <input type="radio" name="extractMode" value="count">
+            <span class="pill">By Count</span>
+        </label>
+        <label>
+            <input type="radio" name="extractMode" value="all">
+            <span class="pill">All Cached</span>
+        </label>
+    </div>
+
+    <!-- Date range inputs -->
+    <div class="card" id="dateInputs">
+        <div class="input-group">
+            <label class="field-label" for="startTime">Start Date & Time</label>
+            <input type="datetime-local" id="startTime">
+        </div>
+
+        <div class="input-group">
+            <label class="field-label" for="endTime">End Date & Time</label>
+            <input type="datetime-local" id="endTime">
+        </div>
+    </div>
+
+    <!-- Message count input -->
+    <div class="card" id="countInput" style="display: none;">
+        <div class="input-group">
+            <label class="field-label" for="messageCount">Number of Messages</label>
+            <input type="number" id="messageCount" value="100" min="1" step="10">
+        </div>
+    </div>
+
+    <!-- Export format selector -->
+    <span class="section-label">Export Format</span>
+    <div class="segmented-control" id="formatControl">
+        <label>
+            <input type="radio" name="exportFormat" value="txt" checked>
+            <span class="pill">TXT</span>
+        </label>
+        <label>
+            <input type="radio" name="exportFormat" value="json">
+            <span class="pill">JSON</span>
+        </label>
+        <label>
+            <input type="radio" name="exportFormat" value="csv">
+            <span class="pill">CSV</span>
+        </label>
+    </div>
+
+    <!-- Advanced & AI Settings (Collapsible) -->
+    <div class="advanced-section">
+        <button type="button" id="advancedToggleBtn" class="advanced-toggle-btn">
+            <span class="advanced-toggle-title"><span>⚙️</span> Advanced & AI Options</span>
+            <span id="advancedToggleArrow" class="advanced-arrow">▸</span>
+        </button>
+
+        <div id="advancedContent" class="advanced-content" style="display: none;">
+            <!-- Thumbnails toggle -->
+            <div class="setting-row">
+                <label class="switch-label">
+                    <input type="checkbox" id="toggleThumbnails" checked>
+                    <span class="switch-text">Capture Media Thumbnails</span>
+                </label>
+            </div>
+
+            <div id="thumbnailOptions" class="sub-setting-group">
+                <div class="input-group-inline">
+                    <label class="field-label-inline" for="thumbnailResolution">Resolution</label>
+                    <select id="thumbnailResolution" class="custom-select">
+                        <option value="120">Low (120px)</option>
+                        <option value="160" selected>Medium (160px - default)</option>
+                        <option value="256">High (256px)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="divider-line"></div>
+
+            <!-- Gemini AI Captioning toggle -->
+            <div class="setting-row">
+                <label class="switch-label">
+                    <input type="checkbox" id="toggleAiCaptions">
+                    <span class="switch-text">AI Image Captions (Gemini)</span>
+                </label>
+            </div>
+
+            <div id="aiOptions" class="sub-setting-group" style="display: none;">
+                <p class="privacy-note">
+                    ⚠️ Images are sent to Google AI Studio with your API key for captioning.
+                </p>
+
+                <div class="input-group">
+                    <label class="field-label" for="geminiApiKey">Gemini API Key</label>
+                    <div class="input-with-button">
+                        <input type="password" id="geminiApiKey" placeholder="AIzaSy...">
+                        <button type="button" id="validateKeyBtn" class="btn-secondary">Check</button>
+                    </div>
+                </div>
+
+                <div id="apiKeyValidationStatus" class="validation-status" style="display: none;"></div>
+
+                <div class="input-group" style="margin-top: 10px;">
+                    <label class="field-label" for="aiModelSelect">Model Preference</label>
+                    <select id="aiModelSelect" class="custom-select full-width">
+                        <option value="auto" selected>✨ Auto (Recommended - 500 RPD Lite first)</option>
+                        <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (500 RPD, 15 RPM)</option>
+                        <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (500 RPD, 15 RPM)</option>
+                        <option value="gemini-3.7-flash">Gemini 3.7 Flash (Reasoning - 20 RPD)</option>
+                        <option value="gemini-3.6-flash">Gemini 3.6 Flash (20 RPD, 5 RPM)</option>
+                        <option value="gemini-3.5-flash">Gemini 3.5 Flash (20 RPD, 5 RPM)</option>
+                        <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite (20 RPD, 10 RPM)</option>
+                        <option value="gemini-2.5-flash">Gemini 2.5 Flash (20 RPD, 5 RPM)</option>
+                    </select>
+                </div>
+
+                <div class="input-group-inline" style="margin-top: 10px;">
+                    <div class="label-with-badge">
+                        <label class="field-label-inline" for="maxAiRequests">Max API calls</label>
+                        <span id="aiCapacityBadge" class="capacity-badge">≈ 200 items</span>
+                    </div>
+                    <input type="number" id="maxAiRequests" value="50" min="1" max="500" step="5" class="custom-number-input">
+                </div>
+                <span class="field-hint">Batched at 4 images per call for 4x speed and quota savings.</span>
+
+                <div class="custom-prompt-section">
+                    <button type="button" id="promptToggleBtn" class="prompt-toggle-btn">
+                        <span class="prompt-toggle-title"><span>✍️</span> Custom Prompt (Optional)</span>
+                        <span id="promptToggleArrow" class="prompt-arrow">▸</span>
+                    </button>
+                    <div id="promptContent" class="prompt-content" style="display: none;">
+                        <textarea id="customAiPrompt" class="custom-textarea" rows="3" placeholder="Leave empty for automatic smart localization. E.g., Describe key objects and people in 1 short sentence..."></textarea>
+                        <div class="prompt-actions">
+                            <button type="button" id="resetPromptBtn" class="btn-text">Reset to Default</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="setting-row sub-toggle" style="margin-top: 12px; margin-bottom: 4px;">
+                    <label class="switch-label">
+                        <input type="checkbox" id="toggleAiTranscription" checked>
+                        <span class="switch-text">🎤 Transcribe Voice Notes (Audio)</span>
+                    </label>
+                </div>
+                <span class="field-hint">Transcribes speech in voice notes (≤5 min). Shares the same API key and call quota.</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Progress indicator -->
+    <div id="progressContainer" class="progress-container">
+        <div class="progress-header">
+            <span id="progressPhaseText">Extracting...</span>
+            <span id="progressModelBadge" class="progress-model-badge" style="display: none;">gemini-3.5-flash-lite</span>
+        </div>
+        <div class="progress-bar-track">
+            <div id="progressBarFill" class="progress-bar-fill indeterminate"></div>
+        </div>
+        <div class="progress-footer">
+            <span id="progressBatchDetail"></span>
+            <span id="progressCountText">0 messages</span>
+        </div>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="btn-group">
+        <button id="copyBtn" disabled>
+            <span>📋</span> Copy Text
+        </button>
+        <button id="downloadBtn" disabled>
+            <span>💾</span> Download
+        </button>
+    </div>
+
+    <!-- Cancel button (active during extraction) -->
+    <button id="cancelBtn" class="cancel-btn" style="display: none;">
+        <span>⏹</span> Cancel Extraction
+    </button>
+
+    <!-- Status message -->
+    <div class="status-container" id="statusContainer">
+        <div class="spinner" id="spinner"></div>
+        <p id="statusMsg"></p>
+    </div>
+
+    <p class="note">
+        Exports messages directly from local database with automatic DOM scroll fallback.
+    </p>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
