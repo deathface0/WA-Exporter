@@ -145,6 +145,7 @@
         const rawFormat = `[${timeStr}, ${dateStr}] ${sender}: ${quotedPrefix}${content}`;
 
         return {
+            id: msg.id ? (msg.id._serialized || msg.id) : null,
             timestamp: ts,
             sender: sender,
             type: typeKey,
@@ -156,8 +157,27 @@
     }
 
     window.addEventListener('message', async (event) => {
-        if (!event.data || !event.data.__waExpReq) return;
+        if (event.source !== window || !event.data || !event.data.__waExpReq) return;
+        
         const { callbackId, action, params } = event.data;
+        if (typeof callbackId !== 'string' || typeof action !== 'string') return;
+        
+        const allowedActions = ['capture_thumbnail', 'extract_audio_blob', 'extract', 'count'];
+        if (!allowedActions.includes(action)) {
+            window.postMessage({ __waExp: callbackId, error: 'Invalid action' }, '*');
+            return;
+        }
+        
+        // Strict parameter validation
+        if (action === 'capture_thumbnail' && typeof params?.blobUrl !== 'string') {
+            return window.postMessage({ __waExp: callbackId, error: 'Invalid blobUrl' }, '*');
+        }
+        if (action === 'extract') {
+            if (params?.mode && typeof params.mode !== 'string') return window.postMessage({ __waExp: callbackId, error: 'Invalid mode' }, '*');
+            if (params?.start && typeof params.start !== 'number') return window.postMessage({ __waExp: callbackId, error: 'Invalid start' }, '*');
+            if (params?.end && typeof params.end !== 'number') return window.postMessage({ __waExp: callbackId, error: 'Invalid end' }, '*');
+            if (params?.count && typeof params.count !== 'number') return window.postMessage({ __waExp: callbackId, error: 'Invalid count' }, '*');
+        }
 
         // 1. Handle Thumbnail operations directly without opening IndexedDB
         if (action === 'capture_thumbnail') {
@@ -381,7 +401,13 @@
                         result = formatted.slice(-count);
                     }
 
-                    window.postMessage({ __waExp: callbackId, result }, '*');
+                    window.postMessage({ 
+                        __waExp: callbackId, 
+                        result: {
+                            data: result,
+                            earliestAvailable: formatted.length > 0 ? formatted[0].timestamp : null
+                        } 
+                    }, '*');
                     return;
                 }
 

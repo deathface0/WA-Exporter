@@ -155,9 +155,16 @@
         }
 
         const currentTitle = getActiveChatTitle();
-        window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatName;
+        
+        if (window.WAExporter.State.abortController) {
+            window.WAExporter.State.abortController.abort();
+        }
+        window.WAExporter.State.abortController = new AbortController();
+        // removed request.signal to prevent serialization issues
+        
+window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatName;
         window.WAExporter.State.status = 'extracting';
-        window.WAExporter.State.request = request;
+        window.WAExporter.State.request = Object.assign({}, request);
         window.WAExporter.State.progress = { count: 0, phase: 'starting', source: 'database' };
         window.WAExporter.State.result = null;
         window.WAExporter.State.error = null;
@@ -172,58 +179,117 @@
                         window.WAExporter.State.progress = { count: 0, phase: 'reading_database', source: 'database' };
                         broadcastProgress(0, 'reading_database', 'database');
 
-                        const idbMessages = await window.WAExporter.queryDB('extract', request, 600);
+                        let idbMessages = [];
+                        let idbEarliest = null;
+                        try {
+                            const dbRes = await window.WAExporter.queryDB('extract', request, 600);
+                            if (dbRes && Array.isArray(dbRes.data)) {
+                                idbMessages = dbRes.data;
+                                idbEarliest = dbRes.earliestAvailable;
+                            } else if (Array.isArray(dbRes)) {
+                                idbMessages = dbRes;
+                            }
+                        } catch (err) {
+                            console.warn('[WA-Exporter] IndexedDB query failed:', err.message);
+                        }
 
+                        let isComplete = false;
                         if (Array.isArray(idbMessages) && idbMessages.length > 0) {
-                            let isComplete = false;
                             if (request.mode === 'count') {
                                 isComplete = idbMessages.length >= (request.count || 100);
                             } else if (request.mode === 'date' && request.start) {
-                                const earliest = idbMessages.reduce((min, m) => (!min || m.timestamp < min.timestamp) ? m : min, null);
-                                isComplete = earliest && earliest.timestamp <= request.start;
+                                // We cannot prove contiguous cache coverage from IDB alone.
+                                // We must either merge with DOM (isComplete = false) or mark it partial.
+                                // We will force the DOM scroller to verify completeness by setting isComplete = false.
+                                isComplete = false;
                             }
-
-                            if (isComplete) {
-                                console.log(`[WA-Exporter] IndexedDB completely satisfied request (${idbMessages.length} messages).`);
-                                const processedMessages = await runMediaAndAiPipeline(idbMessages, request);
-                                const res = {
-                                    data: processedMessages,
-                                    source: 'database',
-                                    isPartial: false
-                                };
-                                window.WAExporter.State.status = 'completed';
-                                window.WAExporter.State.result = res;
-                                window.WAExporter.State.completedAt = Date.now();
-                                broadcastCompleted(res);
-                                handleBackgroundAutoAction(res, request);
-                                return res;
-                            }
-                            console.log(`[WA-Exporter] IndexedDB returned only ${idbMessages.length} cached messages (incomplete for ${request.mode} mode). Falling back to DOM scrolling...`);
                         }
+
+                        if (isComplete && Array.isArray(idbMessages) && idbMessages.length > 0) {
+                            console.log(`[WA-Exporter] IndexedDB completely satisfied request (${idbMessages.length} messages).`);
+                            const processedMessages = await runMediaAndAiPipeline(idbMessages, request);
+                            if (window.WAExporter.State.abortController && window.WAExporter.State.abortController.signal.aborted) throw new Error("Aborted");
+                            const res = {
+                                data: processedMessages,
+                                source: 'database',
+                                isPartial: false
+                            };
+                            window.WAExporter.State.status = 'completed';
+                            window.WAExporter.State.result = res;
+                            window.WAExporter.State.completedAt = Date.now();
+                            broadcastCompleted(res);
+                            handleBackgroundAutoAction(res, request);
+                            return res;
+                        }
+
+                        console.log(`[WA-Exporter] IndexedDB returned only ${idbMessages.length} cached messages. Incomplete or unsupported mode. Running DOM Scroller to merge...`);
+                        
+                        if (window.WAExporter && window.WAExporter.Scroller) {
+                            window.WAExporter.State.progress = { count: idbMessages.length, phase: 'scrolling', source: 'dom' };
+                            broadcastProgress(idbMessages.length, 'scrolling', 'dom');
+
+                            const scrollResult = await window.WAExporter.Scroller.startExtraction(request);
+                            const domMessages = scrollResult.messages || [];
+                            
+                            // Merge by ID, keeping unique items safely
+                            const mergedMap = new Map();
+                            let fallbackIdCounter = 0;
+                            const getSig = (m) => m.id ? m.id : `no_id_${fallbackIdCounter++}_${m.timestamp}`;
+                            
+                            // Insert IDB messages first
+                            idbMessages.forEach(m => {
+                                mergedMap.set(getSig(m), m);
+                            });
+                            // Override/merge with DOM messages (they might have better thumbnails/current state)
+                            domMessages.forEach(m => {
+                                // If we don't have an ID, we don't overwrite IDB messages, we just append them.
+                                mergedMap.set(getSig(m), m);
+                            });
+
+                            let merged = Array.from(mergedMap.values());
+                            
+                            // Preserve domIndex sorting for ties
+                            merged.sort((a, b) => {
+                                if (a.timestamp !== b.timestamp) {
+                                    return a.timestamp - b.timestamp;
+                                }
+                                if (typeof a.domIndex === 'number' && typeof b.domIndex === 'number') {
+                                    return a.domIndex - b.domIndex;
+                                }
+                                return 0;
+                            });
+
+                            // Re-apply filters on merged data
+                            if (request.mode === 'date') {
+                                const start = request.start || 0;
+                                const end = request.end || Infinity;
+                                merged = merged.filter(m => m.timestamp >= start && m.timestamp <= end);
+                            } else if (request.mode === 'count') {
+                                const count = request.count || 100;
+                                if (merged.length > count) {
+                                    merged = merged.slice(-count);
+                                }
+                            }
+
+                            const processedMessages = await runMediaAndAiPipeline(merged, request);
+                            if (window.WAExporter.State.abortController && window.WAExporter.State.abortController.signal.aborted) throw new Error("Aborted");
+                            const res = {
+                                data: processedMessages,
+                                source: 'merged',
+                                isPartial: !!scrollResult.isPartial
+                            };
+                            window.WAExporter.State.status = 'completed';
+                            window.WAExporter.State.result = res;
+                            window.WAExporter.State.completedAt = Date.now();
+                            broadcastCompleted(res);
+                            handleBackgroundAutoAction(res, request);
+                            return res;
+                        }
+
                     } catch (err) {
-                        console.warn('[WA-Exporter] IndexedDB query skipped, using DOM scrolling:', err.message);
+                        console.warn('[WA-Exporter] Orchestrator error:', err.message);
+                        throw err;
                     }
-                }
-
-                // 2. Fallback Strategy: Progressive DOM Scrolling
-                if (window.WAExporter && window.WAExporter.Scroller) {
-                    console.log('[WA-Exporter] Starting fallback DOM scroll extraction...');
-                    window.WAExporter.State.progress = { count: 0, phase: 'scrolling', source: 'dom' };
-                    broadcastProgress(0, 'scrolling', 'dom');
-
-                    const scrollResult = await window.WAExporter.Scroller.startExtraction(request);
-                    const processedMessages = await runMediaAndAiPipeline(scrollResult.messages || [], request);
-                    const res = {
-                        data: processedMessages,
-                        source: 'dom',
-                        isPartial: !!scrollResult.isPartial
-                    };
-                    window.WAExporter.State.status = 'completed';
-                    window.WAExporter.State.result = res;
-                    window.WAExporter.State.completedAt = Date.now();
-                    broadcastCompleted(res);
-                    handleBackgroundAutoAction(res, request);
-                    return res;
                 }
 
                 throw new Error('Neither IndexedDB nor DOM scroller available.');
@@ -245,6 +311,8 @@
      * Post-processing pipeline: captures thumbnails from RAM blob URLs and optionally runs Gemini AI captioning.
      */
     async function runMediaAndAiPipeline(messages, request) {
+        const signal = window.WAExporter.State.abortController ? window.WAExporter.State.abortController.signal : null;
+        if (signal && signal.aborted) throw new Error("Aborted");
         if (!Array.isArray(messages) || messages.length === 0) return messages;
 
         const shouldCaptureThumbnails = request && request.captureThumbnails !== false;
@@ -269,6 +337,7 @@
                 const maxSize = parseInt(request.thumbnailSize, 10) || 160;
 
                 await Promise.all(mediaItems.map(async (item) => {
+                    if (signal && signal.aborted) return;
                     const m = messages[item.key];
                     if (m && !m.thumbnail && item.blobUrl) {
                         try {
@@ -299,13 +368,18 @@
             console.log(`[WA-Exporter] 🖼️ Successfully captured ${totalCaptured}/${totalMedia} thumbnails.`);
         }
 
+        // Shared AI Request Budget
+        const sharedAiBudget = { callsMade: 0, maxCalls: parseInt(request.maxAiRequests, 10) || 50 };
         // 2. Gemini AI Captioning Pipeline
         let processedCaptions = 0;
         if (shouldRunAi) {
             try {
                 broadcastProgress(0, 'ai_captioning', 'ai', { total: 0, model: request.model || null });
+                if (signal && signal.aborted) throw new Error("Aborted");
                 await window.WAExporter.Gemini.processMessageCaptions(messages, {
                     apiKey: request.geminiApiKey,
+                    signal: window.WAExporter.State.abortController ? window.WAExporter.State.abortController.signal : null,
+                    budget: sharedAiBudget,
                     maxRequests: request.maxAiRequests || 50,
                     customPrompt: request.customPrompt,
                     model: request.model || null
@@ -319,22 +393,23 @@
         }
 
         // 2.5 Late Audio Capture Pipeline
-        const audioItems = messages.map((m, idx) => ({ key: idx, msg: m }))
-            .filter(item => item.msg && ['ptt', 'audio'].includes(item.msg.type) && !item.msg.audioData);
+        const shouldRunTranscription = request && request.enableAiTranscription && request.geminiApiKey && window.WAExporter.Gemini;
+        const audioItems = shouldRunTranscription ? messages.map((m, idx) => ({ key: idx, msg: m }))
+            .filter(item => item.msg && ['ptt', 'audio'].includes(item.msg.type) && !item.msg.audioData) : [];
 
         if (audioItems.length > 0) {
-            console.log(`[WA-Exporter] 🎤 Processing late capture for ${audioItems.length} audio items...`);
-            await Promise.all(audioItems.map(async (item) => {
+            console.log(`[WA-Exporter] 🎤 Processing late capture for ${audioItems.length} audio items sequentially...`);
+            for (const item of audioItems) {
+                if (signal && signal.aborted) throw new Error("Aborted");
                 try {
                     let targetUrl = item.msg.audioBlobUrl;
                     
-                    // If no blob URL from DOM, try querying the React Fiber from the MAIN world via bridge
                     if (!targetUrl && item.msg.id && window.WAExporter.queryDB) {
                         try {
                             const dbResult = await window.WAExporter.queryDB('extract_audio_blob', { messageId: item.msg.id }, 2500);
                             if (dbResult) {
                                 targetUrl = dbResult;
-                                item.msg.audioBlobUrl = dbResult; // store it for future
+                                item.msg.audioBlobUrl = dbResult;
                                 console.log('[WA-Exporter] Retrieved audio blob URL via queryDB:', targetUrl);
                             }
                         } catch (dbErr) {
@@ -342,9 +417,7 @@
                         }
                     }
 
-                    if (!targetUrl) {
-                        return; // Still no URL, give up
-                    }
+                    if (!targetUrl) continue;
 
                     let base64 = null;
                     if (targetUrl.startsWith('data:')) {
@@ -363,20 +436,22 @@
                 } catch (e) {
                     console.warn('[WA-Exporter] Audio blob fetch failed:', e);
                 }
-            }));
+            }
         }
 
         // 3. Gemini AI Voice Note Transcription Pipeline
-        const shouldRunTranscription = request && request.enableAiTranscription && request.geminiApiKey && window.WAExporter.Gemini;
         if (shouldRunTranscription) {
             try {
                 const totalQuota = parseInt(request.maxAiRequests, 10) || 50;
                 const remainingQuota = Math.max(0, totalQuota - processedCaptions);
                 if (remainingQuota > 0) {
                     broadcastProgress(0, 'ai_transcription', 'ai', { total: 0, model: request.model || null });
+                    if (signal && signal.aborted) throw new Error("Aborted");
                     await window.WAExporter.Gemini.processMessageTranscriptions(messages, {
                         apiKey: request.geminiApiKey,
-                        maxRequests: remainingQuota,
+                    signal: window.WAExporter.State.abortController ? window.WAExporter.State.abortController.signal : null,
+                        budget: sharedAiBudget,
+                        maxRequests: request.maxAiRequests || 50,
                         model: request.model || null
                     }, (curr, total, phaseLabel, activeModel) => {
                         broadcastProgress(curr, 'ai_transcription', 'ai', { total: total, model: activeModel || request.model || null });
@@ -392,7 +467,7 @@
         // Clean up internal properties: delete thumbnail and audioData after processed
         messages.forEach(m => {
             if (m) {
-                if (shouldRunAi || !shouldCaptureThumbnails) {
+                if (!shouldCaptureThumbnails) {
                     delete m.thumbnail;
                 }
                 delete m.blobUrl;
@@ -520,7 +595,7 @@
             content: m.content
         };
         // Always delete thumbnail after processed by AI, or if thumbnails disabled
-        if (includeThumbnails && m.thumbnail && !m.aiCaption) {
+        if (includeThumbnails && m.thumbnail) {
             item.thumbnail = m.thumbnail;
         }
         if (m.aiCaption) {
@@ -650,18 +725,22 @@
 
     function triggerDownload(filename, text, mime) {
         try {
-            const blob = new Blob([text], { type: mime });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(() => {
-                a.remove();
-                URL.revokeObjectURL(url);
-            }, 1000);
+            browser.runtime.sendMessage({ type: 'download_file', filename, text, mime }).then(res => {
+                if (!res || !res.ok) throw new Error("Background download failed or unavailable");
+            }).catch(() => {
+                const blob = new Blob([text], { type: mime });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => {
+                    a.remove();
+                    URL.revokeObjectURL(url);
+                }, 1000);
+            });
         } catch (e) {
             console.warn('[WA-Exporter] Download failed:', e);
         }
@@ -771,8 +850,11 @@
         }
 
         if (request.action === 'cancel_extraction') {
-            if (window.WAExporter && window.WAExporter.Scroller) {
-                window.WAExporter.Scroller.abort();
+            if (window.WAExporter.State.abortController) {
+                window.WAExporter.State.abortController.abort();
+            }
+            if (window.WAExporter && window.WAExporter.Scroller && window.WAExporter.Scroller.abortExtraction) {
+                window.WAExporter.Scroller.abortExtraction();
             }
             sendResponse({ status: 'aborted' });
             return false;

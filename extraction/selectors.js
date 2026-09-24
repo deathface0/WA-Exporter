@@ -30,9 +30,14 @@
         const main = document.querySelector('#main');
         if (!main) return null;
 
+        const panel = main.querySelector('[data-testid="conversation-panel-messages"]');
+        if (panel) return panel;
+
+        // Try exact match first
         const explicit = main.querySelector('div[scrollable="true"]');
         if (explicit) return explicit;
 
+        // Candidate classes
         const candidate = main.querySelector(window.WAExporter.SELECTORS.scrollContainer);
         if (candidate && candidate.scrollHeight > candidate.clientHeight) return candidate;
 

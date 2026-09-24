@@ -10,11 +10,19 @@
     const pad = n => n.toString().padStart(2, '0');
 
     let isAborted = false;
+    let noIdCollisions = 0; // Counts cases where a no-ID key was already in the map
 
     function createMessageKey(msg) {
         if (msg.id) return msg.id;
-        // Unique signature for deduplication fallback
-        return `${msg.timestamp}_${msg.sender}_${msg.type}_${(msg.content || '').slice(0, 40)}`;
+        // Without an ID, use a content-based signature for deduplication.
+        // This correctly merges overlapping viewport scans of the same message,
+        // but will collapse genuinely distinct messages with identical
+        // sender + timestamp + content. extractFiberId() in parsers.js
+        // recovers IDs for most user messages; this fallback primarily
+        // affects system/decorative elements.
+        const contentStr = msg.content || msg.caption || msg.systemText || msg.type || '';
+        const sig = `${msg.timestamp}_${msg.sender}_${contentStr}`;
+        return 'no_id_' + (sig.length > 500 ? sig.substring(0, 500) + '_' + sig.length : sig);
     }
 
     function sleep(ms) {
@@ -199,6 +207,12 @@
                 
                 if (currentDomIndex < contextState.lowestIndex) contextState.lowestIndex = currentDomIndex;
                 if (currentDomIndex > contextState.highestIndex) contextState.highestIndex = currentDomIndex;
+            } else if (item.key.startsWith('no_id_')) {
+                // A no-ID key collision: this row produced a key already in the map.
+                // It may be a harmless overlapping re-scan, or it may be a genuinely
+                // distinct message that was collapsed. We cannot distinguish the two
+                // without a stable ID, so we count it for the export summary.
+                noIdCollisions++;
             }
             currentDomIndex++;
         });
@@ -259,6 +273,7 @@
 
     async function startExtraction(options = {}) {
         isAborted = false;
+        noIdCollisions = 0;
         const startTime = Date.now();
         const mode = options.mode || 'all';
         const targetCount = options.count || 100;
@@ -406,6 +421,7 @@
 
             scrollContainer.scrollTop = Math.max(0, scrollContainer.scrollTop - 750);
             scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+            scrollContainer.dispatchEvent(new WheelEvent('wheel', { deltaY: -750, bubbles: true }));
 
             await waitForNewDOMNodes(scrollContainer, 1000);
             await sleep(200);
@@ -460,9 +476,22 @@
         });
         console.groupEnd();
 
+        let isPartial = isAborted;
+        if (mode === 'count' && sorted.length < targetCount) isPartial = true;
+        if (mode === 'date') {
+            // Check if we actually reached the requested start date bounds
+            const earliestScanned = Array.from(messageMap.values()).reduce((earliest, msg) => (!earliest || msg.timestamp < earliest.timestamp) ? msg : earliest, null);
+            if (!earliestScanned || earliestScanned.timestamp > startDate) {
+                // We stopped before reaching the target date (e.g. max retries or chat actually ended earlier than expected).
+                // We must expose this coverage as partial/unknown to avoid false claims of completeness.
+                isPartial = true;
+            }
+        }
+        
         return {
             messages: sorted,
-            isPartial: isAborted || (mode === 'count' && sorted.length < targetCount),
+            isPartial: isPartial,
+            noIdCollisions: noIdCollisions,
             source: 'dom',
             stopReason
         };

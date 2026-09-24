@@ -9,7 +9,7 @@
 * **Intelligent Dual-Engine Extraction**:
   * **IndexedDB Engine**: Instant local database retrieval from WhatsApp Web's internal storage when cached.
   * **Smart DOM Auto-Scroller**: Resilient auto-scrolling with `MutationObserver`, virtualization triggers, and phone history sync banners.
-  * **Visual DOM Sequencing**: Assigns continuous DOM sequence indices (`domIndex`) across scroll batches to guarantee 100% faithful visual chat ordering even with ambiguous dates or missing date headers.
+  * **Robust Message Collation**: Uses collision-aware ID tracking and content-hashing to seamlessly merge partial message chunks, ensuring 100% accurate ordering across scroll batches without relying on unreliable DOM sequences.
 * **Seamless Background Execution**:
   * Manifest V3 service worker / background script bridge keeps extractions running if the popup closes.
   * Auto-downloads files or copies to clipboard upon completion with an in-page toast notification.
@@ -29,6 +29,8 @@
   * **Speech-to-Text (STT) Processing**: Converts raw Opus/OGG audio streams to base64 and transcribes speech using Google Gemini models.
   * **Duration-Aware**: Automatically protects API quotas by safely processing voice notes under 5 minutes.
   * **Integrated Workflow**: Can be run concurrently or independently alongside image captioning with custom toggle controls.
+* **Safe Cancellation & Abort Control**:
+  * **Abortable Pipelines**: Extractions, media fetching, and AI processing tasks can be safely canceled mid-flight via an `AbortController` without resource leaks or dangling background requests.
 * **Multiple Export Formats**:
   * **TXT**: Clean, chronological transcript with timestamps, senders, replies, media labels, image AI descriptions, and voice note transcriptions (`[Voice Note] [AI Transcript: "..."]`).
   * **JSON**: Structured schema containing metadata, timestamps, senders, message types, thumbnails, AI captions, AI transcripts, and reply trees.

@@ -97,27 +97,51 @@
     /**
      * Executes fetch requests through the background script to bypass page CSP restrictions.
      */
-    async function safeGeminiFetch(endpoint, method = 'GET', body = null) {
+    async function safeGeminiFetch(endpoint, method = 'GET', body = null, retries = 3, signal = null) {
+        if (signal && signal.aborted) throw new Error("Aborted");
         try {
             if (typeof browser !== 'undefined' && browser.runtime && browser.runtime.sendMessage) {
-                const response = await browser.runtime.sendMessage({
+                const requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2,9);
+                let onAbort = null;
+                
+                const fetchPromise = browser.runtime.sendMessage({
                     type: 'gemini_api_call',
-                    endpoint: endpoint,
-                    method: method,
-                    body: body
+                    requestId,
+                    endpoint,
+                    method,
+                    body
                 });
+                
+                if (signal) {
+                    onAbort = () => {
+                        browser.runtime.sendMessage({ type: 'abort_gemini_call', requestId }).catch(()=>null);
+                    };
+                    signal.addEventListener('abort', onAbort);
+                }
+                
+                const response = await fetchPromise;
+                if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+                if (signal && signal.aborted) throw new Error("Aborted");
+                
                 if (response) {
                     return response;
                 }
             }
         } catch (e) {
+            if (e.message === "Aborted") throw e;
             console.warn('[WA-Exporter Gemini] Background proxy error, trying direct fetch:', e.message);
         }
 
         // Direct fetch fallback
+        let timeoutId;
+        let onAbort = null;
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 14000);
+            if (signal) {
+                onAbort = () => controller.abort();
+                signal.addEventListener('abort', onAbort);
+            }
+            timeoutId = setTimeout(() => controller.abort(), 14000);
 
             const res = await fetch(endpoint, {
                 method: method,
@@ -125,7 +149,8 @@
                 body: body ? JSON.stringify(body) : undefined,
                 signal: controller.signal
             });
-            clearTimeout(timeoutId);
+            
+            if (signal && signal.aborted) throw new Error("Aborted");
 
             const text = await res.text();
             let data = null;
@@ -136,7 +161,11 @@
             }
             return { status: res.status, ok: res.ok, data: data };
         } catch (err) {
+            if (err.name === 'AbortError' || err.message === "Aborted") throw new Error("Aborted");
             return { status: 0, ok: false, error: err.message };
+        } finally {
+            if (timeoutId) clearTimeout(timeoutId);
+            if (signal && onAbort) signal.removeEventListener('abort', onAbort);
         }
     }
 
@@ -272,7 +301,7 @@
      * Generates captions for a batch of images (up to 4) in a single API call.
      * Returns an object mapping 1-based batch index -> caption string.
      */
-    async function generateBatchCaptions(apiKey, batchItems, promptText = null, modelName = null, retries = 3) {
+    async function generateBatchCaptions(apiKey, batchItems, promptText = null, modelName = null, retries = 3, budget = null, signal = null) {
         if (!apiKey || !Array.isArray(batchItems) || batchItems.length === 0) return {};
 
         const count = batchItems.length;
@@ -320,7 +349,14 @@
 
                 const cleanModel = activeModel.startsWith('models/') ? activeModel : `models/${activeModel}`;
                 const endpoint = `${GEMINI_API_BASE}/${cleanModel}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
-                const res = await safeGeminiFetch(endpoint, 'POST', payload);
+                if (budget) {
+                        if (budget.callsMade >= budget.maxCalls) {
+                            console.warn('[WA-Exporter Gemini] 🛑 Shared API budget exceeded.');
+                            return {};
+                        }
+                        budget.callsMade++;
+                    }
+                    const res = await safeGeminiFetch(endpoint, 'POST', payload, 3, signal);
 
                 if (res.status === 200 && res.data) {
                     const candidate = res.data?.candidates?.[0];
@@ -401,6 +437,7 @@
                 console.warn(`[WA-Exporter Gemini] Request failed with status ${res.status}:`, res.error || res.data);
                 return {};
             } catch (e) {
+                if (e.message === "Aborted") throw e;
                 if (attempt === retries) {
                     console.warn('[WA-Exporter Gemini] Error generating batch captions:', e.message);
                     return {};
@@ -415,9 +452,9 @@
     /**
      * Generates a caption for a single image (wrapper around generateBatchCaptions).
      */
-    async function generateImageCaption(apiKey, base64DataUri, promptText = null, modelName = null) {
+    async function generateImageCaption(apiKey, base64DataUri, promptText = null, modelName = null, budget = null, signal = null) {
         if (!apiKey || !base64DataUri) return null;
-        const res = await generateBatchCaptions(apiKey, [{ thumbnail: base64DataUri }], promptText, modelName);
+        const res = await generateBatchCaptions(apiKey, [{ thumbnail: base64DataUri }], promptText, modelName, 3, budget, signal);
         return res[1] || null;
     }
 
@@ -427,6 +464,7 @@
      */
     async function processMessageCaptions(messages, config = {}, onProgress = null) {
         const apiKey = config.apiKey;
+        const signal = config.signal;
         if (!apiKey) return messages;
 
         const maxRequests = parseInt(config.maxRequests, 10) || 50;
@@ -441,7 +479,7 @@
 
         if (eligible.length === 0) return messages;
 
-        const toProcess = eligible.slice(0, maxRequests);
+        const toProcess = eligible;
         const total = toProcess.length;
 
         console.log(`[WA-Exporter Gemini] 🚀 Starting batched AI captioning for ${total} items (${BATCH_SIZE} imgs/call) using '${model}'...`);
@@ -449,6 +487,7 @@
         let processedTotal = 0;
 
         for (let i = 0; i < total; i += BATCH_SIZE) {
+            if (signal && signal.aborted) break;
             const chunkMessages = toProcess.slice(i, i + BATCH_SIZE);
             const batchItems = chunkMessages.map((m, idx) => ({
                 idx: idx + 1,
@@ -461,7 +500,7 @@
                 onProgress(currentBatchProgress, total, `AI Captioning (${currentBatchProgress}/${total})`, discoveredModel || model);
             }
 
-            const captionsMap = await generateBatchCaptions(apiKey, batchItems, customPrompt, model);
+            const captionsMap = await generateBatchCaptions(apiKey, batchItems, customPrompt, model, 3, config.budget, signal);
             
             if (discoveredModel && discoveredModel !== model) {
                 model = discoveredModel;
@@ -473,7 +512,7 @@
 
                 if (!caption) {
                     console.log(`[WA-Exporter Gemini] 🔄 Fallback single caption for item ${i + b + 1}...`);
-                    caption = await generateImageCaption(apiKey, item.thumbnail, customPrompt, model);
+                    caption = await generateImageCaption(apiKey, item.thumbnail, customPrompt, model, config.budget, signal);
                 }
 
                 if (caption) {
@@ -510,7 +549,7 @@
     /**
      * Generates a transcript for a single audio message.
      */
-    async function generateAudioTranscript(apiKey, base64AudioDataUri, modelName = null, retries = 3) {
+    async function generateAudioTranscript(apiKey, base64AudioDataUri, modelName = null, retries = 3, budget = null, signal = null) {
         if (!apiKey || !base64AudioDataUri) return null;
 
         const uriParts = base64AudioDataUri.split(';base64,');
@@ -548,7 +587,14 @@
 
                 const cleanModel = activeModel.startsWith('models/') ? activeModel : `models/${activeModel}`;
                 const endpoint = `${GEMINI_API_BASE}/${cleanModel}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
-                const res = await safeGeminiFetch(endpoint, 'POST', payload);
+                if (budget) {
+                        if (budget.callsMade >= budget.maxCalls) {
+                            console.warn('[WA-Exporter Gemini] 🛑 Shared API budget exceeded.');
+                            return null;
+                        }
+                        budget.callsMade++;
+                    }
+                    const res = await safeGeminiFetch(endpoint, 'POST', payload, 3, signal);
 
                 if (res.status === 200 && res.data) {
                     const candidate = res.data?.candidates?.[0];
@@ -597,6 +643,7 @@
                 console.warn(`[WA-Exporter Gemini] Transcript request failed (${res.status}):`, res.error || res.data);
                 return null;
             } catch (e) {
+                if (e.message === "Aborted") throw e;
                 if (attempt === retries) {
                     console.warn('[WA-Exporter Gemini] Error generating transcript:', e.message);
                     return null;
@@ -614,6 +661,7 @@
      */
     async function processMessageTranscriptions(messages, config = {}, onProgress = null) {
         const apiKey = config.apiKey;
+        const signal = config.signal;
         if (!apiKey) return messages;
 
         const maxRequests = parseInt(config.maxRequests, 10) || 50;
@@ -638,7 +686,7 @@
 
         if (eligible.length === 0) return messages;
 
-        const toProcess = eligible.slice(0, maxRequests);
+        const toProcess = eligible;
         const total = toProcess.length;
 
         console.log(`[WA-Exporter Gemini] 🎤 Starting AI transcription for ${total} voice notes (max 5 min each) using '${model}'...`);
@@ -646,13 +694,14 @@
         let processedTotal = 0;
 
         for (let i = 0; i < total; i++) {
+            if (signal && signal.aborted) break;
             const m = toProcess[i];
 
             if (onProgress) {
                 onProgress(i + 1, total, `AI Transcription (${i + 1}/${total})`, discoveredModel || model);
             }
 
-            const transcript = await generateAudioTranscript(apiKey, m.audioData, model);
+            const transcript = await generateAudioTranscript(apiKey, m.audioData, model, 3, config.budget, signal);
 
             if (discoveredModel && discoveredModel !== model) {
                 model = discoveredModel;

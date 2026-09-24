@@ -35,10 +35,13 @@
         ensurePageScript();
 
         return new Promise((resolve, reject) => {
+            const allowedActions = ['capture_thumbnail', 'extract_audio_blob', 'extract', 'count'];
+            if (!allowedActions.includes(action)) return reject(new Error('Invalid action: ' + action));
+
             const callbackId = 'cb_' + Math.random().toString(36).slice(2, 10) + Date.now();
 
             const handler = (event) => {
-                if (!event.data || event.data.__waExp !== callbackId) return;
+                if (event.source !== window || !event.data || event.data.__waExp !== callbackId) return;
                 window.removeEventListener('message', handler);
                 clearTimeout(timerId);
 

@@ -218,7 +218,7 @@
         if (parsedTime) {
             baseDate.setHours(parsedTime.hours, parsedTime.minutes, 0, 0);
             // If the resulting timestamp is in the future (e.g. 10:13 AM when it is currently 00:30 AM), adjust to yesterday
-            if (baseDate.getTime() > Date.now() + 60000 && !currentDateContext) {
+            if (baseDate.getTime() > Date.now() + 60000) {
                 baseDate.setDate(baseDate.getDate() - 1);
             }
         } else if (lastKnownMsg && lastKnownMsg.timestamp) {
@@ -620,7 +620,7 @@
         if (!img && !hasImageIcon) return null;
 
         // Check if it's an emoji img inside text (ignore)
-        if (img && (img.classList.contains('emoji') || img.hasAttribute('data-emoji-char'))) return null;
+        if (img && (img.classList.contains('emoji') || img.hasAttribute('data-emoji-char') || img.closest('.selectable-text, .copyable-text, [data-plain-text]'))) return null;
 
         let blobUrl = null;
         if (img && img.src && (img.src.startsWith('blob:') || img.src.startsWith('data:'))) {
@@ -964,6 +964,32 @@
         parseTextMessage
     ];
 
+    /**
+     * Attempts to recover a stable message ID from React's internal Fiber tree.
+     * WhatsApp Web stores message objects in component props; this traverses
+     * up to 20 Fiber nodes looking for props.message.id or props.msg.id.
+     * Returns the serialized ID string, or null if not found.
+     */
+    function extractFiberId(msgEl) {
+        try {
+            const fiberKey = Object.keys(msgEl).find(k => k.startsWith('__reactFiber$'));
+            if (!fiberKey) return null;
+            let node = msgEl[fiberKey];
+            for (let i = 0; i < 20 && node; i++) {
+                const props = node.memoizedProps || node.pendingProps;
+                if (props) {
+                    const msgObj = props.message || props.msg;
+                    if (msgObj && msgObj.id) {
+                        const serialized = msgObj.id._serialized || msgObj.id.id;
+                        if (serialized && typeof serialized === 'string') return serialized;
+                    }
+                }
+                node = node.return;
+            }
+        } catch (e) { /* Fiber structure changed or unavailable */ }
+        return null;
+    }
+
     function parseDOMMessage(msgEl, dateContext, lastKnownMsg, myName) {
         const prePlain = parsePrePlainText(msgEl);
         const sender = extractSender(msgEl, prePlain, myName);
@@ -1000,6 +1026,9 @@
             const parent = msgEl.closest('[data-id]');
             if (parent) msgId = parent.getAttribute('data-id');
         }
+        if (!msgId) {
+            msgId = extractFiberId(msgEl);
+        }
 
         // Mutate parsedData in-place so that any async thumbnail captures
         // (from attachThumbnail's fetch fallback) write to the SAME object
@@ -1017,6 +1046,7 @@
 
     window.WAExporter.Parsers = {
         parseDOMMessage,
+        extractFiberId,
         extractSender,
         extractTimestamp,
         parseQuotedMessage,

@@ -10,7 +10,8 @@
         "activeTab",
         "scripting",
         "clipboardWrite",
-        "storage"
+        "storage",
+        "downloads"
     ],
     "background": {
         "scripts": [

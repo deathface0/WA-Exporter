@@ -768,7 +768,7 @@
             content: m.content
         };
         // Always delete thumbnail after processed by AI, or if thumbnails disabled
-        if (includeThumbnails && m.thumbnail && !m.aiCaption) {
+        if (includeThumbnails && m.thumbnail) {
             item.thumbnail = m.thumbnail;
         }
         if (m.aiCaption) {
@@ -801,7 +801,11 @@
 
     function escapeCsvCell(val) {
         if (val === null || val === undefined) return '""';
-        const str = String(val).replace(/"/g, '""');
+        let str = String(val);
+        if (/^[=+\-@]/.test(str)) {
+            str = "'" + str;
+        }
+        str = str.replace(/"/g, '""');
         return `"${str}"`;
     }
 
@@ -870,16 +874,17 @@
     }
 
     function triggerDownload(filename, text, mime) {
-        const blob = new Blob([text], { type: mime });
-        const url = URL.createObjectURL(blob);
-        const a = Object.assign(document.createElement('a'), {
-            href: url,
-            download: filename
+        browser.runtime.sendMessage({ type: 'download_file', filename, text, mime }).then(res => {
+            if (!res || !res.ok) throw new Error("Background download failed");
+        }).catch(() => {
+            const blob = new Blob([text], { type: mime });
+            const url = URL.createObjectURL(blob);
+            const a = Object.assign(document.createElement('a'), { href: url, download: filename });
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
         });
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
     }
 
     function generateFilename(ext) {

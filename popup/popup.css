@@ -23,13 +23,22 @@
     --warning-bg: rgba(234, 67, 53, 0.2);
     --warning-color: #f28b82;
     --info-bg: rgba(138, 43, 226, 0.15);
-    --info-color: #a461f8; /* Gemini Purple */
+    --info-color: #a461f8;
+    /* Gemini Purple */
 }
 
 @keyframes pulse-glow {
-    0% { box-shadow: 0 0 0 0 rgba(164, 97, 248, 0.7); }
-    70% { box-shadow: 0 0 0 10px rgba(164, 97, 248, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(164, 97, 248, 0); }
+    0% {
+        box-shadow: 0 0 0 0 rgba(164, 97, 248, 0.7);
+    }
+
+    70% {
+        box-shadow: 0 0 0 10px rgba(164, 97, 248, 0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(164, 97, 248, 0);
+    }
 }
 
 .model-badge.pulsing {
@@ -210,7 +219,7 @@ body {
     transition: all 0.2s ease;
 }
 
-.segmented-control input[type="radio"]:checked + .pill {
+.segmented-control input[type="radio"]:checked+.pill {
     color: var(--text-primary);
     background: var(--surface-color);
     box-shadow: var(--shadow-sm);
@@ -324,8 +333,13 @@ input:focus {
 }
 
 @keyframes indeterminate {
-    0% { left: -40%; }
-    100% { left: 100%; }
+    0% {
+        left: -40%;
+    }
+
+    100% {
+        left: 100%;
+    }
 }
 
 .progress-footer {
@@ -379,6 +393,7 @@ button:disabled {
 #copyBtn {
     background: var(--btn-copy);
 }
+
 #copyBtn:hover:not(:disabled) {
     background: var(--btn-copy-hover);
 }
@@ -386,6 +401,7 @@ button:disabled {
 #downloadBtn {
     background: var(--btn-download);
 }
+
 #downloadBtn:hover:not(:disabled) {
     background: var(--btn-download-hover);
 }
@@ -397,6 +413,7 @@ button:disabled {
     padding: 8px;
     font-size: 11px;
 }
+
 .cancel-btn:hover:not(:disabled) {
     background: var(--btn-cancel-hover);
 }
@@ -440,7 +457,9 @@ button:disabled {
 }
 
 @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 /* ── Advanced & AI Options ── */
