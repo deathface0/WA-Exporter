@@ -352,6 +352,7 @@
         'extraction/selectors.js',
         'extraction/parsers.js',
         'extraction/scroller.js',
+        'extraction/wajs-client.js',
         'extraction/main.js'
     ];
 

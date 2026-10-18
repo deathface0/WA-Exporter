@@ -6,8 +6,59 @@
     }
 
     const activeRequests = new Map();
+
+    // Vendored WA-JS build (scripts/build-wajs.sh). Pinned after phase 0; bump only after re-running it.
+    const WAJS_DEFAULT_VERSION = '4.6.1';
+    const WAJS_ALLOWED_VERSIONS = ['4.6.1'];
+    // Read once by the bundle at evaluation time; must be set before it loads.
+    // linkPreviewApiServers must be [] (null falls back to third-party servers).
+    const WAJS_CONFIG = {
+        disableGoogleAnalytics: true,
+        googleAnalyticsId: null,
+        googleAnalyticsUserProperty: {},
+        poweredBy: null,
+        deviceName: false,
+        syncAllStatus: false,
+        liveLocationLimit: 0,
+        sendStatusToDevice: false,
+        linkPreviewApiServers: []
+    };
+
+    async function injectWajs(tabId, version) {
+        const target = { tabId };
+        const [probe] = await browser.scripting.executeScript({
+            target, world: 'MAIN',
+            func: () => ({ host: !!window.__waExpWajsHost, version: (window.__waExpCore && window.__waExpCore.version) || null })
+        });
+        if (probe && probe.result && probe.result.host) {
+            return { ok: true, alreadyInjected: true, version: probe.result.version };
+        }
+
+        await browser.scripting.executeScript({
+            target, world: 'MAIN',
+            func: (cfg) => { window.WPPConfig = cfg; },
+            args: [WAJS_CONFIG]
+        });
+        await browser.scripting.executeScript({ target, world: 'MAIN', files: [`vendor/wa-js/${version}/wa-js.bundle.js`] });
+        await browser.scripting.executeScript({ target, world: 'MAIN', files: ['wajs/host.js'] });
+        return { ok: true, alreadyInjected: false, version };
+    }
+
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!message) return;
+
+        if (message.type === 'inject_wajs') {
+            const tab = sender && sender.tab;
+            if (!tab || !tab.id || !tab.url || !tab.url.startsWith('https://web.whatsapp.com/')) {
+                sendResponse({ ok: false, error: 'Invalid sender' });
+                return false;
+            }
+            const version = WAJS_ALLOWED_VERSIONS.includes(message.version) ? message.version : WAJS_DEFAULT_VERSION;
+            injectWajs(tab.id, version)
+                .then(res => sendResponse(res))
+                .catch(err => sendResponse({ ok: false, error: err.message }));
+            return true;
+        }
 
                 if (message.type === 'download_file') {
             try {

@@ -849,6 +849,20 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
             return true;
         }
 
+        // Dev probe (phase 0): inject WA-JS and run the read-only health check.
+        if (request.action === 'wajs_probe') {
+            const Wajs = window.WAExporter.Wajs;
+            if (!Wajs) {
+                sendResponse({ ok: false, error: 'WA-JS client not loaded' });
+                return false;
+            }
+            Wajs.ensureInjected(request.version || null)
+                .then(inj => Wajs.call('wajs_health', { expectedChatTitle: request.expectedChatTitle || null })
+                    .then(health => sendResponse({ injection: inj, health })))
+                .catch(err => sendResponse({ ok: false, error: err.message }));
+            return true;
+        }
+
         if (request.action === 'cancel_extraction') {
             if (window.WAExporter.State.abortController) {
                 window.WAExporter.State.abortController.abort();

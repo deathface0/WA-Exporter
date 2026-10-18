@@ -10,3 +10,6 @@ local.properties
 .idea/
 .vscode/
 *.swp
+
+# Dependencies
+node_modules/
