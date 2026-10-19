@@ -47,7 +47,7 @@
         await ensurePageScript();
 
         return new Promise((resolve, reject) => {
-            const allowedActions = ['capture_thumbnail', 'extract_audio_blob', 'extract', 'count'];
+            const allowedActions = ['capture_thumbnail', 'extract_audio_blob'];
             if (!allowedActions.includes(action)) return reject(new Error('Invalid action: ' + action));
 
             const callbackId = 'cb_' + Math.random().toString(36).slice(2, 10) + Date.now();
@@ -67,10 +67,7 @@
             window.addEventListener('message', handler);
 
             // Set timeout according to action
-            let defaultTimeout = 1000;
-            if (action === 'count') defaultTimeout = 500;
-            else if (action === 'capture_thumbnail') defaultTimeout = 2500;
-            else if (action === 'batch_thumbnails') defaultTimeout = 12000;
+            const defaultTimeout = action === 'capture_thumbnail' ? 2500 : 1000;
 
             const timeoutLimit = timeoutMs || defaultTimeout;
             const timerId = setTimeout(() => {

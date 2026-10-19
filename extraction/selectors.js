@@ -16,12 +16,14 @@
         mediaVideo: '[data-testid="media-url-provider"] video, video, [data-icon="video"]',
         mediaAudio: '[data-testid="audio-player"], button[data-testid="audio-play"], [data-testid="audio-track"], [data-testid="ptt-icon"], [data-icon="audio-play"], [data-icon="ptt"]',
         mediaDocument: '[data-testid="document-message"], span[data-testid="document-title"], [data-icon="document"]',
-        mediaSticker: '[data-testid="sticker"], img[src*="sticker"], img[alt*="sticker" i], [data-icon="sticker"]',
+        mediaSticker: '[data-testid="sticker-container"], [data-testid="sticker"], img[src*="sticker"], img[alt*="sticker" i], [data-icon="sticker"]',
         mediaContact: '[data-testid="vcard"], [data-testid="contact-card"], button[data-testid="vcard-view"], [data-icon="default-user"]',
         mediaPoll: '[data-testid="poll-bubble"], [data-testid="poll-view-votes"], [data-testid="poll-component"], [data-testid="poll-results"], [data-icon*="poll"]',
         mediaLocation: 'a[href*="maps.google"], a[href*="google.com/maps"], a[href*="maps.apple"], a[href*="waze.com"]',
         deletedMsg: '[data-testid="recalled"], span[data-icon="recalled"], [data-testid="icon-recalled"]',
         senderName: '[data-testid="msg-author"], span[data-testid="author"], span._11JPr, span._2103K',
+        // Pins, security codes, group events: not messages (WA-JS leaves them out too).
+        systemMsg: '[data-testid="msg-notification-container"], [data-testid="system_message"]',
         dateDivider: '[data-testid="chat-date-header"], span[data-testid="chat-date-header"], div[data-testid="chat-date-header"]',
         scrollContainer: 'div[scrollable="true"], .x10l6tqk.x13vifvy.x1o0tod.xupqr0c, #main div[tabindex="-1"], #main div[data-testid="conversation-panel-messages"]'
     };

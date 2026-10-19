@@ -7,25 +7,69 @@
 
     const pad = n => n.toString().padStart(2, '0');
 
-    function extractTextWithEmojis(element) {
-        if (!element) return '';
+    // WhatsApp renders its formatting markers as tags; put them back so the text reads as
+    // written (same as the phone export and the WA-JS engine).
+    const INLINE_MARKERS = { STRONG: '*', B: '*', EM: '_', I: '_', DEL: '~', S: '~', STRIKE: '~', CODE: '`' };
+
+    function collectText(node) {
         let text = '';
-        element.childNodes.forEach(node => {
-            if (node.nodeType === Node.TEXT_NODE) {
-                text += node.textContent;
-            } else if (node.nodeType === Node.ELEMENT_NODE) {
-                // Ignore SVG icons and data-icon spans which contain hidden UI text like "ic-imagePhoto" or "ic-keyboard-voice-filled"
-                if (node.tagName === 'SVG' || node.hasAttribute('data-icon')) {
-                    return;
-                }
-                if (node.tagName === 'IMG' && node.alt) {
-                    text += node.alt;
-                } else {
-                    text += extractTextWithEmojis(node);
-                }
+        // Block elements (lists, quotes) start on their own line; the next piece starts on a new
+        // line too unless WhatsApp already put a "\n" text node there (it does between <li>s).
+        let needBreak = false;
+        const append = (piece) => {
+            if (!piece) return;
+            if (needBreak && text && !text.endsWith('\n') && !piece.startsWith('\n')) text += '\n';
+            needBreak = false;
+            text += piece;
+        };
+        const block = (piece) => {
+            if (text && !text.endsWith('\n')) text += '\n';
+            text += piece.replace(/\n+$/, '');
+            needBreak = true;
+        };
+        node.childNodes.forEach(child => {
+            if (child.nodeType === 3) {
+                append(child.textContent);
+                return;
+            }
+            if (child.nodeType !== 1) return;
+            const tag = (child.tagName || '').toUpperCase();
+            // Ignore SVG icons and data-icon spans which contain hidden UI text like "ic-imagePhoto" or "ic-keyboard-voice-filled"
+            if (tag === 'SVG' || (child.hasAttribute && child.hasAttribute('data-icon'))) return;
+            if (tag === 'IMG') {
+                append(child.alt || '');
+                return;
+            }
+            if (tag === 'BR') {
+                append('\n');
+                return;
+            }
+            const inner = collectText(child);
+            if (INLINE_MARKERS[tag] && inner.trim()) {
+                const m = INLINE_MARKERS[tag];
+                append(m + inner + m);
+            } else if (tag === 'PRE') {
+                append('```' + inner + '```');
+            } else if (tag === 'LI') {
+                const list = child.parentNode;
+                const ordered = list && (list.tagName || '').toUpperCase() === 'OL';
+                const index = ordered ? Array.prototype.indexOf.call(list.children, child) + 1 : 0;
+                block((ordered ? `${index}. ` : '- ') + inner);
+            } else if (tag === 'UL' || tag === 'OL' || tag === 'P') {
+                block(inner);
+            } else if (tag === 'BLOCKQUOTE') {
+                block('> ' + inner);
+            } else {
+                append(inner);
             }
         });
-        return text.trim();
+        return text;
+    }
+
+    // Line breaks live in text nodes between spans: only the outer result is trimmed.
+    function extractTextWithEmojis(element) {
+        if (!element) return '';
+        return collectText(element).trim();
     }
 
     /**
@@ -199,7 +243,7 @@
                 const d = new Date(parsedDate.year, parsedDate.month, parsedDate.day, parsedTime.hours, parsedTime.minutes, 0, 0);
                 const dateStr = `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
                 const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-                return { timestamp: d.getTime(), dateStr, timeStr };
+                return { timestamp: d.getTime(), dateStr, timeStr, dateSource: 'exact' };
             }
         }
 
@@ -231,7 +275,22 @@
         const dateStr = `${pad(baseDate.getDate())}/${pad(baseDate.getMonth() + 1)}/${baseDate.getFullYear()}`;
         const timeStr = `${pad(baseDate.getHours())}:${pad(baseDate.getMinutes())}`;
 
-        return { timestamp: ts, dateStr, timeStr };
+        // 'context': day from a divider or neighbour in the same viewport; 'guess': no day known yet.
+        const dateSource = (currentDateContext || (lastKnownMsg && lastKnownMsg.timestamp)) ? 'context' : 'guess';
+        return { timestamp: ts, dateStr, timeStr, dateSource };
+    }
+
+    const DATE_SOURCE_RANK = { guess: 0, context: 1, exact: 2 };
+
+    /** Moves a parsed message to another day, keeping its time of day; updates rawFormat. */
+    function restampDay(msg, day, dateSource) {
+        const d = new Date(msg.timestamp);
+        const moved = new Date(day.getFullYear(), day.getMonth(), day.getDate(), d.getHours(), d.getMinutes(), 0, 0);
+        msg.timestamp = moved.getTime();
+        msg.dateSource = dateSource;
+        const prefix = `[${pad(moved.getHours())}:${pad(moved.getMinutes())}, ${pad(moved.getDate())}/${pad(moved.getMonth() + 1)}/${moved.getFullYear()}]`;
+        if (typeof msg.rawFormat === 'string') msg.rawFormat = msg.rawFormat.replace(/^\[[^\]]*\]/, prefix);
+        return msg;
     }
 
     function isOutgoingMessage(msgEl) {
@@ -475,7 +534,7 @@
     function parseDeletedMessage(msgEl) {
         const deletedEl = msgEl.querySelector(SELECTORS.deletedMsg || '[data-testid="recalled"]');
         const text = msgEl.textContent || '';
-        if (deletedEl || text.includes('This message was deleted') || text.includes('Eliminaste este mensaje') || text.includes('Se eliminó este mensaje')) {
+        if (deletedEl || /You deleted this message|This message was deleted|Eliminaste este mensaje|Se eliminó este mensaje|Este mensaje fue eliminado/.test(text)) {
             return { type: 'revoked', content: '[Deleted message]', mediaUrl: null };
         }
         return null;
@@ -590,7 +649,7 @@
 
     function parseStickerMessage(msgEl) {
         const sticker = msgEl.querySelector(SELECTORS.mediaSticker || '[data-testid="sticker"]');
-        const hasStickerIcon = msgEl.querySelector('[data-icon="sticker"], [data-testid="sticker"]') !== null;
+        const hasStickerIcon = msgEl.querySelector('[data-icon="sticker"], [data-testid="sticker"], [data-testid="sticker-container"]') !== null;
         if (!sticker && !hasStickerIcon) return null;
 
         let blobUrl = null;
@@ -609,8 +668,11 @@
     }
 
     function parseImageMessage(msgEl) {
-        // Exclude link previews / URL cards (YouTube, Facebook, Instagram, TikTok, etc.)
-        if (msgEl.querySelector('[data-testid="link-preview"], .rich-preview, a[href^="http"], a[href^="https"]')) {
+        if (msgEl.querySelector('[data-testid="image-thumb-gif"], [data-testid="video-content"]')) return null;
+        const hasThumb = msgEl.querySelector('[data-testid="image-thumb"]') !== null;
+        // Exclude link previews / URL cards (YouTube, Facebook, Instagram, TikTok, etc.); a link in an image caption is not one.
+        if (msgEl.querySelector('[data-testid="link-preview"], .rich-preview') ||
+            (!hasThumb && msgEl.querySelector('a[href^="http"], a[href^="https"]'))) {
             return null;
         }
 
@@ -644,13 +706,15 @@
     }
 
     function parseVideoMessage(msgEl) {
+        const hasContainer = msgEl.querySelector('[data-testid="video-content"], [data-testid="image-thumb-gif"]') !== null;
         // Exclude link previews / URL cards (YouTube, Facebook, Instagram, TikTok, etc.)
-        if (msgEl.querySelector('[data-testid="link-preview"], .rich-preview, a[href^="http"], a[href^="https"]')) {
+        if (msgEl.querySelector('[data-testid="link-preview"], .rich-preview') ||
+            (!hasContainer && msgEl.querySelector('a[href^="http"], a[href^="https"]'))) {
             return null;
         }
 
         const video = msgEl.querySelector(SELECTORS.mediaVideo || 'video');
-        const hasVideoIcon = msgEl.querySelector('[data-icon="video"], [data-icon="gif"]') !== null;
+        const hasVideoIcon = hasContainer || msgEl.querySelector('[data-icon="video"], [data-icon="gif"]') !== null;
         if (!video && !hasVideoIcon) return null;
 
         let blobUrl = null;
@@ -674,7 +738,7 @@
         let caption = textEl ? extractTextWithEmojis(textEl) : '';
         caption = caption.replace(/^(?:play\s+video|reproducir\s+video|watch\s+video|ver\s+video)\s*/i, '').trim();
 
-        const isGif = msgEl.querySelector('[data-icon="gif"], [data-testid="gif"]') !== null;
+        const isGif = msgEl.querySelector('[data-icon="gif"], [data-testid="gif"], [data-testid="image-thumb-gif"]') !== null;
         const tag = isGif ? '[GIF]' : '[Video]';
         const content = caption ? `${tag} ${caption}` : tag;
 
@@ -897,14 +961,22 @@
         };
     }
 
+    function locationUrl(href) {
+        let decoded = href || '';
+        try { decoded = decodeURIComponent(decoded); } catch (e) { }
+        const coords = /[?&](?:q|ll|query)=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/.exec(decoded);
+        return coords ? `https://maps.google.com/?q=${coords[1]},${coords[2]}` : href;
+    }
+
     function parseLocationMessage(msgEl) {
         const locationLink = msgEl.querySelector(SELECTORS.mediaLocation || 'a[href*="maps"]');
         if (!locationLink) return null;
 
+        const url = locationUrl(locationLink.href);
         return {
             type: 'location',
-            content: `[Location] ${locationLink.href}`,
-            mediaUrl: locationLink.href
+            content: `[Location] ${url}`,
+            mediaUrl: url
         };
     }
 
@@ -991,9 +1063,10 @@
     }
 
     function parseDOMMessage(msgEl, dateContext, lastKnownMsg, myName) {
+        if (msgEl.querySelector(SELECTORS.systemMsg || '[data-testid="msg-notification-container"]')) return null;
         const prePlain = parsePrePlainText(msgEl);
         const sender = extractSender(msgEl, prePlain, myName);
-        const { timestamp, dateStr, timeStr } = extractTimestamp(msgEl, dateContext, prePlain, lastKnownMsg);
+        const { timestamp, dateStr, timeStr, dateSource } = extractTimestamp(msgEl, dateContext, prePlain, lastKnownMsg);
         const quoted = parseQuotedMessage(msgEl);
 
         // Clone msgEl and strip out the quoted-message element so it doesn't pollute the main message text/media
@@ -1035,6 +1108,7 @@
         // that gets stored in the scroller's messageMap.
         parsedData.id = msgId || null;
         parsedData.timestamp = timestamp;
+        parsedData.dateSource = dateSource;
         parsedData.sender = sender;
         parsedData.quotedMessage = quoted;
         parsedData.rawFormat = rawFormat;
@@ -1051,6 +1125,12 @@
         extractTimestamp,
         parseQuotedMessage,
         extractTextWithEmojis,
+        restampDay,
+        locationUrl,
+        parseTimeText,
+        parseDateString,
+        dateFormat: () => detectedDateFormat,
+        DATE_SOURCE_RANK,
         parsePrePlainText,
         cleanFilename,
         isOutgoingMessage

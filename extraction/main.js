@@ -58,6 +58,28 @@
         } catch (e) { }
     }
 
+    // Cancelling keeps what was collected: a phase that stops on abort returns true instead of
+    // throwing, and the caller exports the messages so far as partial.
+    async function untilAborted(fn, signal) {
+        try {
+            await fn();
+        } catch (err) {
+            if ((signal && signal.aborted) || err.message === 'Aborted') return true;
+            throw err;
+        }
+        return !!(signal && signal.aborted);
+    }
+
+    function completeExtraction(res, request) {
+        if (res.stopReason === 'aborted') console.log(`[WA-Exporter] Cancelled: returning ${res.data.length} collected messages as partial.`);
+        window.WAExporter.State.status = 'completed';
+        window.WAExporter.State.result = res;
+        window.WAExporter.State.completedAt = Date.now();
+        broadcastCompleted(res);
+        handleBackgroundAutoAction(res, request);
+        return res;
+    }
+
     /**
      * WA-JS only reads the local cache. When older history is still on the phone, the DOM
      * engine scrolls up and taps WhatsApp's "older messages" notice (what the user would do),
@@ -262,44 +284,45 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                     };
                     try {
                         let wajsRes;
+                        let aborted = false;
                         try {
                             wajsRes = await Engine.run(request, signal, onWajsProgress);
-                            if (wajsRes.needsOlder) {
-                                wajsRes = await syncOlderHistory(wajsRes, request, signal, onWajsProgress);
+                            aborted = signal.aborted;
+                            if (wajsRes.needsOlder && !aborted) {
+                                let synced = null;
+                                aborted = await untilAborted(async () => {
+                                    synced = await syncOlderHistory(wajsRes, request, signal, onWajsProgress);
+                                }, signal);
+                                if (synced) wajsRes = synced;
                             }
                             // Local media caches only; release the host before any AI calls.
-                            await Engine.enrichMedia(wajsRes.messages, {
-                                thumbnails: request.captureThumbnails !== false || !!(request.enableAiCaptions && request.geminiApiKey),
-                                audio: !!(request.enableAiTranscription && request.geminiApiKey && window.WAExporter.Gemini),
-                                maxSize: parseInt(request.thumbnailSize, 10) || 160,
-                                network: {
-                                    enabled: request.downloadMissingMedia === true,
-                                    maxAgeDays: request.mediaMaxAgeDays,
-                                    maxDownloads: request.maxMediaDownloads
-                                }
-                            }, signal, onWajsProgress);
+                            if (!aborted) {
+                                aborted = await untilAborted(() => Engine.enrichMedia(wajsRes.messages, {
+                                    thumbnails: request.captureThumbnails !== false || !!(request.enableAiCaptions && request.geminiApiKey),
+                                    audio: !!(request.enableAiTranscription && request.geminiApiKey && window.WAExporter.Gemini),
+                                    maxSize: parseInt(request.thumbnailSize, 10) || 160,
+                                    network: {
+                                        enabled: request.downloadMissingMedia === true,
+                                        maxAgeDays: request.mediaMaxAgeDays,
+                                        maxDownloads: request.maxMediaDownloads
+                                    }
+                                }, signal, onWajsProgress), signal);
+                            }
                         } finally {
                             await Engine.release();
                         }
-                        const processedMessages = await runMediaAndAiPipeline(wajsRes.messages, request);
-                        if (signal.aborted) throw new Error("Aborted");
-                        const res = {
-                            data: processedMessages,
+                        if (!aborted) aborted = await untilAborted(() => runMediaAndAiPipeline(wajsRes.messages, request), signal);
+                        return completeExtraction({
+                            data: wajsRes.messages,
                             source: wajsRes.olderSync && wajsRes.olderSync.domMessages ? 'wajs+dom' : 'wajs',
                             engine: 'wajs',
-                            isPartial: wajsRes.isPartial,
-                            stopReason: wajsRes.stopReason,
+                            isPartial: wajsRes.isPartial || aborted,
+                            stopReason: aborted ? 'aborted' : wajsRes.stopReason,
                             olderSync: wajsRes.olderSync || null,
                             fallbackReason: null,
                             waVersion: wajsRes.waVersion,
                             wajsVersion: wajsRes.wajsVersion
-                        };
-                        window.WAExporter.State.status = 'completed';
-                        window.WAExporter.State.result = res;
-                        window.WAExporter.State.completedAt = Date.now();
-                        broadcastCompleted(res);
-                        handleBackgroundAutoAction(res, request);
-                        return res;
+                        }, request);
                     } catch (err) {
                         if (err.name === 'WajsUnavailable') {
                             fallbackReason = err.reason;
@@ -314,98 +337,27 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                     }
                 }
 
-                // 1. Primary Strategy: IndexedDB (Only accept if it completely satisfies the request)
-                if (window.WAExporter && window.WAExporter.queryDB) {
-                    try {
-                        console.log('[WA-Exporter] Checking IndexedDB cache...');
-                        window.WAExporter.State.progress = { count: 0, phase: 'reading_database', source: 'database' };
-                        broadcastProgress(0, 'reading_database', 'database');
+                // 1. DOM scroller, merged with whatever WA-JS collected before a mid-run failure.
+                // (The direct IndexedDB read was retired in v3.0: WhatsApp now encrypts columns of
+                // model-storage, and WA-JS reads the same data through WhatsApp's storage layer.)
+                const Scroller = window.WAExporter.Scroller;
+                if (!Scroller) throw new Error('DOM scroller not available.');
+                const signal = window.WAExporter.State.abortController.signal;
+                window.WAExporter.State.progress = { count: wajsPartial.length, phase: 'scrolling', source: 'dom' };
+                broadcastProgress(wajsPartial.length, 'scrolling', 'dom');
 
-                        let idbMessages = [];
-                        let idbEarliest = null;
-                        try {
-                            const dbRes = await window.WAExporter.queryDB('extract', request, 600);
-                            if (dbRes && Array.isArray(dbRes.data)) {
-                                idbMessages = dbRes.data;
-                                idbEarliest = dbRes.earliestAvailable;
-                            } else if (Array.isArray(dbRes)) {
-                                idbMessages = dbRes;
-                            }
-                        } catch (err) {
-                            console.warn('[WA-Exporter] IndexedDB query failed:', err.message);
-                        }
-
-                        // Messages collected by WA-JS before a mid-run failure take part in the id merge.
-                        if (wajsPartial.length) {
-                            idbMessages = idbMessages.concat(wajsPartial);
-                        }
-
-                        let isComplete = false;
-                        if (Array.isArray(idbMessages) && idbMessages.length > 0) {
-                            if (request.mode === 'count') {
-                                isComplete = idbMessages.length >= (request.count || 100);
-                            } else if (request.mode === 'date' && request.start) {
-                                // We cannot prove contiguous cache coverage from IDB alone.
-                                // We must either merge with DOM (isComplete = false) or mark it partial.
-                                // We will force the DOM scroller to verify completeness by setting isComplete = false.
-                                isComplete = false;
-                            }
-                        }
-
-                        if (isComplete && Array.isArray(idbMessages) && idbMessages.length > 0) {
-                            console.log(`[WA-Exporter] IndexedDB completely satisfied request (${idbMessages.length} messages).`);
-                            const processedMessages = await runMediaAndAiPipeline(idbMessages, request);
-                            if (window.WAExporter.State.abortController && window.WAExporter.State.abortController.signal.aborted) throw new Error("Aborted");
-                            const res = {
-                                data: processedMessages,
-                                source: 'database',
-                                engine: 'dom',
-                                fallbackReason,
-                                isPartial: false
-                            };
-                            window.WAExporter.State.status = 'completed';
-                            window.WAExporter.State.result = res;
-                            window.WAExporter.State.completedAt = Date.now();
-                            broadcastCompleted(res);
-                            handleBackgroundAutoAction(res, request);
-                            return res;
-                        }
-
-                        console.log(`[WA-Exporter] IndexedDB returned only ${idbMessages.length} cached messages. Incomplete or unsupported mode. Running DOM Scroller to merge...`);
-                        
-                        if (window.WAExporter && window.WAExporter.Scroller) {
-                            window.WAExporter.State.progress = { count: idbMessages.length, phase: 'scrolling', source: 'dom' };
-                            broadcastProgress(idbMessages.length, 'scrolling', 'dom');
-
-                            const scrollResult = await window.WAExporter.Scroller.startExtraction(request);
-                            const domMessages = scrollResult.messages || [];
-                            
-                            const merged = window.WAExporter.WajsMapper.mergeWithDom(idbMessages, domMessages, request);
-
-                            const processedMessages = await runMediaAndAiPipeline(merged, request);
-                            if (window.WAExporter.State.abortController && window.WAExporter.State.abortController.signal.aborted) throw new Error("Aborted");
-                            const res = {
-                                data: processedMessages,
-                                source: 'merged',
-                                engine: 'dom',
-                                fallbackReason,
-                                isPartial: !!scrollResult.isPartial
-                            };
-                            window.WAExporter.State.status = 'completed';
-                            window.WAExporter.State.result = res;
-                            window.WAExporter.State.completedAt = Date.now();
-                            broadcastCompleted(res);
-                            handleBackgroundAutoAction(res, request);
-                            return res;
-                        }
-
-                    } catch (err) {
-                        console.warn('[WA-Exporter] Orchestrator error:', err.message);
-                        throw err;
-                    }
-                }
-
-                throw new Error('Neither IndexedDB nor DOM scroller available.');
+                const scrollResult = await Scroller.startExtraction(request);
+                const merged = window.WAExporter.WajsMapper.mergeWithDom(wajsPartial, scrollResult.messages || [], request);
+                let aborted = signal.aborted;
+                if (!aborted) aborted = await untilAborted(() => runMediaAndAiPipeline(merged, request), signal);
+                return completeExtraction({
+                    data: merged,
+                    source: 'dom',
+                    engine: 'dom',
+                    fallbackReason,
+                    isPartial: aborted || !!scrollResult.isPartial,
+                    stopReason: aborted ? 'aborted' : (scrollResult.stopReason || null)
+                }, request);
             } catch (error) {
                 window.WAExporter.State.status = 'error';
                 window.WAExporter.State.error = error.message;

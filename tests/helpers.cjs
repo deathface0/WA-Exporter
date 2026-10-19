@@ -6,7 +6,8 @@ const vm = require('node:vm');
 const ROOT = join(__dirname, '..');
 
 function loadScripts(...files) {
-    const sandbox = { console, Date, Math, JSON, Intl, URL, setTimeout, clearTimeout };
+    // chrome: content scripts alias it as `browser` at load time.
+    const sandbox = { console, Date, Math, JSON, Intl, URL, setTimeout, clearTimeout, chrome: {} };
     sandbox.window = sandbox;
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);

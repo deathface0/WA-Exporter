@@ -35,8 +35,9 @@
 
 * Exports contain what WhatsApp Web shows you. In groups, participants that are not in your address book appear with the name they chose; their phone number is never requested and stays empty. For address-book contacts, the number WhatsApp already knows locally is included.
 * Older media may have expired on WhatsApp's servers. It is reported as `media.status: "expired"`; downloading it is not attempted because WhatsApp would ask the sender's phone to upload it again.
-* System notices (pins, security codes, group events) are left out by the WA-JS engine. The DOM engine still exports some of them as regular messages.
-* Cancelling an export currently discards the messages collected so far.
+* System notices (pins, security codes, group events) are left out by both engines.
+* Cancelling an export keeps the messages collected so far and marks the export as partial.
+* The DOM engine only sees what WhatsApp has loaded: older history may need WhatsApp's *"older messages from your phone"* notice, which it taps when needed.
 
 ---
 
@@ -65,7 +66,7 @@ WA-Exporter/
 ├── ai/gemini.js             # Gemini captions and transcription
 ├── db/
 │   ├── bridge.js            # Content-script bridge to the MAIN world (DOM engine)
-│   └── page-script.js       # MAIN world: IndexedDB reads, audio capture, thumbnails (DOM engine)
+│   └── page-script.js       # MAIN world: audio capture and thumbnails (DOM engine)
 ├── export/formatters.js     # TXT / JSON / CSV
 ├── extraction/
 │   ├── main.js              # Orchestrator: WA-JS first, DOM fallback, media and AI pipeline

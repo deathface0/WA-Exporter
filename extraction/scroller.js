@@ -89,8 +89,13 @@
             return new Date(year, month, day);
         }
 
-        // Standard numeric date: DD/MM/YYYY or MM/DD/YYYY
+        // Standard numeric date: DD/MM/YYYY or MM/DD/YYYY. Same order as data-pre-plain-text when known.
         const dMatch = text.match(/(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})/);
+        const Parsers = window.WAExporter.Parsers;
+        if (dMatch && Parsers && Parsers.parseDateString && Parsers.dateFormat && Parsers.dateFormat()) {
+            const p = Parsers.parseDateString(dMatch[0]);
+            if (p) return new Date(p.year, p.month, p.day);
+        }
         if (dMatch) {
             const p1 = parseInt(dMatch[1], 10);
             const p2 = parseInt(dMatch[2], 10);
@@ -118,13 +123,90 @@
         return null;
     }
 
+    /**
+     * Message rows and date dividers in DOM order. Current builds render dividers as plain
+     * children of the message list (div > div > span "8/23/2026" / "Today", no data-testid),
+     * so they are taken from the list's children; the old divider selector is kept as fallback.
+     */
+    function collectRowsAndDividers(main, SELECTORS) {
+        const legacy = Array.from(main.querySelectorAll(`${SELECTORS.messageRow}, ${SELECTORS.dateDivider}`));
+        legacy.dividers = new WeakSet();
+        const firstMsg = main.querySelector('[data-id]');
+        let list = null;
+        for (let e = firstMsg; e && e !== main; e = e.parentElement) {
+            if (e.children.length > 3 && e.querySelectorAll(':scope > * [data-id]').length > 1) { list = e; break; }
+        }
+        if (!list) return legacy;
+
+        const out = [];
+        // Per scan: the virtualized list recycles nodes, so nothing is stored on them.
+        out.dividers = new WeakSet();
+        for (const child of list.children) {
+            const rows = child.querySelectorAll(SELECTORS.messageRow);
+            if (rows.length || child.matches(SELECTORS.messageRow)) {
+                if (child.matches(SELECTORS.messageRow)) out.push(child);
+                rows.forEach(r => out.push(r));
+                continue;
+            }
+            const text = (child.textContent || '').trim();
+            if (text && text.length < 40 && parseDateHeader(text)) {
+                out.dividers.add(child);
+                out.push(child);
+            }
+        }
+        return out.length ? out : legacy;
+    }
+
+    /**
+     * Visual-order indices for one viewport. known[i] is the index of an already collected row,
+     * or null for a new one. New rows go between their known neighbours (fractional if needed),
+     * so media rendered late inside known ranges never collide; rows above everything known
+     * go below lowestIndex, since the scroller moves up.
+     */
+    function assignDomIndices(known, lowestIndex) {
+        const out = known.slice();
+        let i = 0;
+        while (i < out.length) {
+            if (out[i] !== null && out[i] !== undefined) { i++; continue; }
+            let end = i;
+            while (end + 1 < out.length && (out[end + 1] === null || out[end + 1] === undefined)) end++;
+            const run = end - i + 1;
+            const prev = i > 0 ? out[i - 1] : null;
+            const next = end + 1 < out.length ? out[end + 1] : null;
+            for (let k = 0; k < run; k++) {
+                if (prev !== null && next !== null) out[i + k] = prev + (next - prev) * (k + 1) / (run + 1);
+                else if (next !== null) out[i + k] = next - (run - k);
+                // Below the last known row: the next known one may sit just outside the viewport.
+                else if (prev !== null) out[i + k] = prev + (k + 1) * 1e-3;
+                else out[i + k] = lowestIndex - (run - k);
+            }
+            i = end + 1;
+        }
+        return out;
+    }
+
+    function expandGroupedRows(parsedRows) {
+        const out = [];
+        parsedRows.forEach(item => {
+            const grouped = /^grouped-[a-z]+--(.+)$/i.exec(item.parsedMsg.id || '');
+            if (!grouped) return out.push(item);
+            grouped[1].split('-').filter(Boolean).forEach((id, i) => {
+                const msg = i === 0 ? item.parsedMsg : Object.assign({}, item.parsedMsg);
+                msg.id = id;
+                out.push({ key: createMessageKey(msg), parsedMsg: msg, row: item.row });
+            });
+        });
+        return out;
+    }
+
     function scanVisibleMessages(messageMap, contextState) {
         const SELECTORS = window.WAExporter.SELECTORS;
         const main = document.querySelector('#main');
         if (!main) return;
 
         // Collect all date headers and message rows in DOM order, filtering out header/footer and nested child elements
-        const allElements = Array.from(main.querySelectorAll(`${SELECTORS.messageRow}, ${SELECTORS.dateDivider}`));
+        const allElements = collectRowsAndDividers(main, SELECTORS);
+        const listedDividers = allElements.dividers;
         const rows = allElements.filter(el => {
             if (el.closest('header, footer, [data-testid="conversation-header"], [data-testid="chat-footer"]')) {
                 return false;
@@ -136,10 +218,17 @@
             return true;
         });
 
-        const parsedRows = [];
+        // Day context comes from this viewport only (date dividers and messages with an exact
+        // data-pre-plain-text date). Carrying it over from the previous, newer viewport put
+        // undated media days or weeks off while scrolling up.
+        const scan = { dividerDate: null, date: null, lastMsg: null };
+        const sequence = []; // dividers and parsed messages, in DOM order
+
+        let parsedRows = [];
         rows.forEach(row => {
             // Check if this element IS a date divider or CONTAINS one
-            const isDivider = row.matches(SELECTORS.dateDivider);
+            const listed = listedDividers.has(row);
+            const isDivider = listed || row.matches(SELECTORS.dateDivider);
             const containsDivider = !isDivider && row.querySelector(SELECTORS.dateDivider);
 
             if (isDivider || containsDivider) {
@@ -147,10 +236,11 @@
                 const text = dividerEl.textContent.trim();
                 const parsed = parseDateHeader(text);
                 if (parsed) {
-                    contextState.dividerDate = parsed;
-                    contextState.date = parsed;
+                    scan.dividerDate = parsed;
+                    scan.date = parsed;
+                    sequence.push({ divider: true });
                 }
-                if (isDivider && !row.matches(SELECTORS.messageRow)) {
+                if (isDivider && (listed || !row.matches(SELECTORS.messageRow))) {
                     return;
                 }
             }
@@ -161,15 +251,16 @@
             try {
                 const parsedMsg = window.WAExporter.Parsers.parseDOMMessage(
                     msgEl,
-                    contextState.dividerDate || contextState.date,
-                    contextState.lastMsg,
+                    scan.date || scan.dividerDate,
+                    scan.lastMsg,
                     contextState.myName
                 );
 
                 if (parsedMsg && ((parsedMsg.content && parsedMsg.content.trim() !== '') || parsedMsg.mediaUrl)) {
-                    contextState.lastMsg = parsedMsg;
-                    if (parsedMsg.timestamp) {
-                        contextState.date = new Date(parsedMsg.timestamp);
+                    sequence.push({ msg: parsedMsg });
+                    if (parsedMsg.dateSource !== 'guess') {
+                        scan.lastMsg = parsedMsg;
+                        scan.date = new Date(parsedMsg.timestamp);
                     }
 
                     if (window.WAExporter.Parsers.isOutgoingMessage(msgEl) && parsedMsg.sender && parsedMsg.sender !== 'Me' && !contextState.myName) {
@@ -186,27 +277,46 @@
 
         if (parsedRows.length === 0) return;
 
-        // Assign DOM sequence indices to preserve visual order across scroll chunks
-        let anchorIndex = contextState.lowestIndex;
-        let anchorRowIdx = parsedRows.length;
-
-        for (let i = 0; i < parsedRows.length; i++) {
-            if (messageMap.has(parsedRows[i].key)) {
-                anchorIndex = messageMap.get(parsedRows[i].key).domIndex;
-                anchorRowIdx = i;
-                break; // Align with the FIRST known message in this viewport
+        // Rows above the first dated one take the day of the next dated message, unless a
+        // date divider sits in between (then the day stays unknown until an older viewport).
+        sequence.forEach((item, i) => {
+            if (!item.msg || item.msg.dateSource !== 'guess') return;
+            for (let j = i + 1; j < sequence.length; j++) {
+                if (sequence[j].divider) break;
+                const next = sequence[j].msg;
+                if (next.dateSource !== 'guess') {
+                    window.WAExporter.Parsers.restampDay(item.msg, new Date(next.timestamp), 'context');
+                    break;
+                }
             }
-        }
+        });
 
-        let currentDomIndex = anchorIndex - anchorRowIdx;
+        // Several stickers sent in a row share one bubble (data-id "grouped-sticker--<id1>-<id2>"):
+        // export one message per id so they match the WA-JS ids and the real message count.
+        parsedRows = expandGroupedRows(parsedRows);
 
-        parsedRows.forEach(item => {
-            if (!messageMap.has(item.key)) {
-                item.parsedMsg.domIndex = currentDomIndex;
+        // Assign DOM sequence indices to preserve visual order across scroll chunks
+        const indices = assignDomIndices(
+            parsedRows.map(item => (messageMap.has(item.key) ? messageMap.get(item.key).domIndex : null)),
+            contextState.lowestIndex
+        );
+
+        const rank = window.WAExporter.Parsers.DATE_SOURCE_RANK;
+        parsedRows.forEach((item, i) => {
+            const known = messageMap.get(item.key);
+            // A later viewport may know the day better: update in place (thumbnail captures hold this object).
+            if (known && rank[item.parsedMsg.dateSource] > rank[known.dateSource]) {
+                known.timestamp = item.parsedMsg.timestamp;
+                known.dateSource = item.parsedMsg.dateSource;
+                known.rawFormat = item.parsedMsg.rawFormat;
+            }
+            if (!known) {
+                const domIndex = indices[i];
+                item.parsedMsg.domIndex = domIndex;
                 messageMap.set(item.key, item.parsedMsg);
-                
-                if (currentDomIndex < contextState.lowestIndex) contextState.lowestIndex = currentDomIndex;
-                if (currentDomIndex > contextState.highestIndex) contextState.highestIndex = currentDomIndex;
+
+                if (domIndex < contextState.lowestIndex) contextState.lowestIndex = domIndex;
+                if (domIndex > contextState.highestIndex) contextState.highestIndex = domIndex;
             } else if (item.key.startsWith('no_id_')) {
                 // A no-ID key collision: this row produced a key already in the map.
                 // It may be a harmless overlapping re-scan, or it may be a genuinely
@@ -214,7 +324,6 @@
                 // without a stable ID, so we count it for the export summary.
                 noIdCollisions++;
             }
-            currentDomIndex++;
         });
     }
 
@@ -261,6 +370,29 @@
                     console.warn('[WA-Exporter Scroller] Failed to click sync button:', e);
                 }
             }
+        }
+        return false;
+    }
+
+    /**
+     * The message list is virtualized: scrollTop = scrollHeight only reaches the end of the
+     * loaded chunk. Keep scrolling down until nothing new renders and the view sits at the bottom.
+     */
+    async function scrollToNewest(container, maxRounds = 40) {
+        // Done once the view sits at the bottom and the list height holds for two rounds
+        // (unrelated DOM updates, e.g. receipts, must not keep it waiting).
+        let stableRounds = 0;
+        for (let i = 0; i < maxRounds; i++) {
+            if (isAborted) return false;
+            const height = container.scrollHeight;
+            container.scrollTop = container.scrollHeight;
+            container.dispatchEvent(new Event('scroll', { bubbles: true }));
+            container.dispatchEvent(new WheelEvent('wheel', { deltaY: 800, bubbles: true }));
+            await waitForNewDOMNodes(container, 600);
+            await sleep(150);
+            const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 5;
+            stableRounds = atBottom && container.scrollHeight === height ? stableRounds + 1 : 0;
+            if (stableRounds >= 2) return true;
         }
         return false;
     }
@@ -343,6 +475,10 @@
             } catch (e) { }
         }
 
+        // Always start from the newest message: the view may have been left anywhere.
+        const atNewest = await scrollToNewest(scrollContainer);
+        if (!atNewest) console.warn('[WA-Exporter] Could not confirm the view reached the newest message.');
+
         // Initial scan
         scanVisibleMessages(messageMap, contextState);
         await sleep(50); // Allow async thumbnail fetches to resolve before scrolling
@@ -350,8 +486,14 @@
         reportProgress('scrolling');
         console.log(`👀 Initial scan in viewport: %c${messageMap.size} messages found.`, 'color: #25d366;');
 
+        // "Last N": collect a few more than N and rescan once after a pause before stopping, so
+        // media rendered late at the top of the last viewport is not skipped (older rows above
+        // it would otherwise take its place in the last N).
+        const COUNT_MARGIN = 10;
         while (!isAborted) {
-            if (mode === 'count' && messageMap.size >= targetCount) {
+            if (mode === 'count' && messageMap.size >= targetCount + COUNT_MARGIN) {
+                await sleep(600);
+                scanVisibleMessages(messageMap, contextState);
                 stopReason = `Target count reached (${messageMap.size} >= ${targetCount})`;
                 break;
             }
@@ -459,6 +601,7 @@
             }
             return a.timestamp - b.timestamp;
         });
+        resolveGuessedDates(sorted);
         const totalScanned = sorted.length;
 
         if (mode === 'date') {
@@ -505,6 +648,38 @@
         };
     }
 
+    /**
+     * Days still unknown after scrolling (no dated neighbour in any viewport): take the day of
+     * the nearest dated messages in visual order. Same day on both sides: that day. Otherwise
+     * the day that keeps the order (time of day after the previous one, or before the next one).
+     * messages: sorted by domIndex; updated in place.
+     */
+    function resolveGuessedDates(messages) {
+        const Parsers = window.WAExporter.Parsers;
+        const dated = i => messages[i] && messages[i].dateSource !== 'guess';
+        const minutes = ts => { const d = new Date(ts); return d.getHours() * 60 + d.getMinutes(); };
+        const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
+
+        messages.forEach((m, i) => {
+            if (m.dateSource !== 'guess') return;
+            let p = i - 1;
+            while (p >= 0 && !dated(p)) p--;
+            let n = i + 1;
+            while (n < messages.length && !dated(n)) n++;
+            const prev = p >= 0 ? messages[p] : null;
+            const next = n < messages.length ? messages[n] : null;
+            if (!prev && !next) return;
+
+            let day;
+            if (prev && next && sameDay(prev.timestamp, next.timestamp)) day = prev.timestamp;
+            else if (prev && minutes(m.timestamp) >= minutes(prev.timestamp)) day = prev.timestamp;
+            else if (next && minutes(m.timestamp) <= minutes(next.timestamp)) day = next.timestamp;
+            else day = (prev || next).timestamp;
+            Parsers.restampDay(m, new Date(day), 'context');
+        });
+        return messages;
+    }
+
     function abortExtraction() {
         isAborted = true;
     }
@@ -512,6 +687,9 @@
     window.WAExporter.Scroller = {
         startExtraction,
         abortExtraction,
-        parseDateHeader
+        parseDateHeader,
+        resolveGuessedDates,
+        expandGroupedRows,
+        assignDomIndices
     };
 })();
