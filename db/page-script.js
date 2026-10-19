@@ -4,8 +4,17 @@
     if (window.__waPageScriptInjected) return;
     window.__waPageScriptInjected = true;
 
-    // 1. Setup Blob interceptor
-    if (!window.__waExpOriginalClick) {
+    // 1. Blob interceptor, only while extract_audio_blob runs: it swallows blob downloads
+    // (WhatsApp's own "Download" included), so it must not stay installed. Restored a few
+    // seconds after the last use in case WhatsApp clicks the anchor late.
+    const INTERCEPTOR_GRACE_MS = 5000;
+    let interceptorUsers = 0;
+    let restoreTimer = null;
+
+    function installInterceptor() {
+        interceptorUsers++;
+        clearTimeout(restoreTimer);
+        if (window.__waExpOriginalClick) return;
         window.__waExpOriginalClick = HTMLAnchorElement.prototype.click;
         HTMLAnchorElement.prototype.click = function () {
             if (this.download && this.href && this.href.startsWith('blob:')) {
@@ -15,7 +24,17 @@
             }
             return window.__waExpOriginalClick.apply(this, arguments);
         };
-        console.log("[WA-Exporter Page Script] Blob Interceptor Injected Successfully.");
+    }
+
+    function releaseInterceptor() {
+        interceptorUsers = Math.max(0, interceptorUsers - 1);
+        if (interceptorUsers > 0) return;
+        clearTimeout(restoreTimer);
+        restoreTimer = setTimeout(() => {
+            if (interceptorUsers > 0 || !window.__waExpOriginalClick) return;
+            HTMLAnchorElement.prototype.click = window.__waExpOriginalClick;
+            window.__waExpOriginalClick = null;
+        }, INTERCEPTOR_GRACE_MS);
     }
 
     async function getActiveChatId(db) {
@@ -216,6 +235,7 @@
 
         if (action === 'extract_audio_blob') {
             console.log('[WA-Exporter Page Script] Received extract_audio_blob for messageId:', params?.messageId);
+            installInterceptor();
             try {
                 const messageId = params?.messageId;
                 let blobUrl = null;
@@ -330,6 +350,8 @@
             } catch (err) {
                 console.error('[WA-Exporter Page Script] Error in extract_audio_blob:', err);
                 window.postMessage({ __waExp: callbackId, error: err.message }, '*');
+            } finally {
+                releaseInterceptor();
             }
             return;
         }

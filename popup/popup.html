@@ -92,12 +92,13 @@
             <div class="input-group-inline">
                 <label class="field-label-inline" for="engineSelect">Engine</label>
                 <select id="engineSelect" class="custom-select">
-                    <option value="dom" selected>Classic DOM (default)</option>
-                    <option value="wajs">WA-JS (experimental)</option>
+                    <option value="auto" selected>Auto (WA-JS, default)</option>
+                    <option value="dom">Classic DOM</option>
                 </select>
             </div>
-            <span class="field-hint">WA-JS reads messages without scrolling. Falls back to DOM if unavailable.</span>
+            <span class="field-hint">Auto reads messages with WA-JS, without scrolling, and falls back to DOM if unavailable.</span>
 
+            <div id="wajsOptions">
             <div class="setting-row sub-toggle" style="margin-top: 8px;">
                 <label class="switch-label">
                     <input type="checkbox" id="toggleSyncOlder">
@@ -126,6 +127,7 @@
                     <label class="field-label-inline" for="maxMediaDownloads">Max downloads</label>
                     <input type="number" id="maxMediaDownloads" value="30" min="1" max="100" step="5" class="custom-number-input">
                 </div>
+            </div>
             </div>
 
             <div class="divider-line"></div>

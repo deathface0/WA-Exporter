@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
     "name": "WA Web Chat Exporter",
-    "version": "2.0",
-    "description": "Export WhatsApp Web chats locally to TXT, JSON, or CSV with intelligent IndexedDB and DOM auto-scroll extraction.",
+    "version": "3.0",
+    "description": "Export WhatsApp Web chats locally to TXT, JSON or CSV. Read-only WA-JS engine with automatic fallback to DOM auto-scroll.",
     "action": {
         "default_popup": "popup/popup.html"
     },
@@ -24,27 +24,6 @@
         "https://web.whatsapp.com/*",
         "https://generativelanguage.googleapis.com/*"
     ],
-    "content_scripts": [
-        {
-            "matches": [
-                "*://web.whatsapp.com/*",
-                "https://web.whatsapp.com/*"
-            ],
-            "js": [
-                "ai/gemini.js",
-                "db/bridge.js",
-                "extraction/selectors.js",
-                "extraction/parsers.js",
-                "extraction/scroller.js",
-                "export/formatters.js",
-                "extraction/wajs-client.js",
-                "extraction/wajs-mapper.js",
-                "extraction/wajs-engine.js",
-                "extraction/main.js"
-            ],
-            "run_at": "document_idle"
-        }
-    ],
     "web_accessible_resources": [
         {
             "resources": [
@@ -59,7 +38,7 @@
     "browser_specific_settings": {
         "gecko": {
             "id": "wa-exporter@local.dev",
-            "strict_min_version": "109.0"
+            "strict_min_version": "128.0"
         }
     }
 }

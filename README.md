@@ -1,98 +1,93 @@
-# WA Web Chat Exporter v2.0
+# WA Web Chat Exporter v3.0
 
-**WA Web Chat Exporter** is a lightweight, privacy-focused browser extension for extracting and exporting chat histories directly from WhatsApp Web without sending any data to external servers.
-
----
-
-## Key Features
-
-* **Intelligent Dual-Engine Extraction**:
-  * **IndexedDB Engine**: Instant local database retrieval from WhatsApp Web's internal storage when cached.
-  * **Smart DOM Auto-Scroller**: Resilient auto-scrolling with `MutationObserver`, virtualization triggers, and phone history sync banners.
-  * **Robust Message Collation**: Uses collision-aware ID tracking and content-hashing to seamlessly merge partial message chunks, ensuring 100% accurate ordering across scroll batches without relying on unreliable DOM sequences.
-* **Seamless Background Execution**:
-  * Manifest V3 service worker / background script bridge keeps extractions running if the popup closes.
-  * Auto-downloads files or copies to clipboard upon completion with an in-page toast notification.
-* **Automatic Phone History Sync**:
-  * Automatically detects and triggers the *"Click here to get older messages from your phone"* banner when hitting local cache boundaries to pull deeper chat logs.
-* **Context-Aware Date Parsing**:
-  * Resolves ambiguous `DD/MM/YYYY` vs `MM/DD/YYYY` formats with chat context validation and isolated date divider tracking.
-* **Local Media Thumbnail Capture**:
-  * Extracts media blobs directly from WhatsApp Web memory, downscales via Offscreen Canvas, and embeds lightweight base64 Data URIs (120px / 160px / 256px) into JSON and CSV exports.
-* **High-Efficiency AI Image Captioning (Google Gemini)**:
-  * **Batched Vision Calls**: Captions up to 4 images per API request, cutting latency by 75% and maximizing free-tier quotas.
-  * **Dynamic Model Fallback Cascade**: Prioritizes high-RPD models (`gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`) with automatic fallback to `gemini-3.7-flash` and others on 429/404 errors.
-  * **Customizable Prompts**: Localized defaults with support for user-defined descriptive prompts.
-  * **Key Validation & Safety**: Built-in RPM rate-limiting and API key status checker.
-* **AI Voice Note Transcription (Google Gemini)**:
-  * **Zero-Disk Blob Interception**: Automates the native decryption pipeline in the page context (`MAIN` world) to capture ephemeral voice note audio Blobs in-memory without spamming local downloads.
-  * **Speech-to-Text (STT) Processing**: Converts raw Opus/OGG audio streams to base64 and transcribes speech using Google Gemini models.
-  * **Duration-Aware**: Automatically protects API quotas by safely processing voice notes under 5 minutes.
-  * **Integrated Workflow**: Can be run concurrently or independently alongside image captioning with custom toggle controls.
-* **Safe Cancellation & Abort Control**:
-  * **Abortable Pipelines**: Extractions, media fetching, and AI processing tasks can be safely canceled mid-flight via an `AbortController` without resource leaks or dangling background requests.
-* **Multiple Export Formats**:
-  * **TXT**: Clean, chronological transcript with timestamps, senders, replies, media labels, image AI descriptions, and voice note transcriptions (`[Voice Note] [AI Transcript: "..."]`).
-  * **JSON**: Structured schema containing metadata, timestamps, senders, message types, thumbnails, AI captions, AI transcripts, and reply trees.
-  * **CSV**: Tabular data ready for Excel, Sheets, and data pipelines (with dedicated `Thumbnail`, `AICaption`, and `AITranscript` columns).
-* **Extraction Scope Options**:
-  * **Date Range**: Filter messages between precise start and end dates/times.
-  * **By Count**: Extract the latest *N* messages (e.g., 50, 100, 500, 3000+).
-  * **All Cached**: Extract all accessible chat history.
-* **Comprehensive Content Support**:
-  * Text formatting, emojis, quoted replies, images, videos, GIFs, voice notes/audio, stickers, documents, polls, contacts (vCards), location links, and deleted/revoked messages.
-* **100% Client-Side Privacy**:
-  * All operations run strictly inside your browser. No data ever leaves your computer unless you explicitly enable Gemini AI captioning or voice note transcription with your own API key.
+**WA Web Chat Exporter** is a privacy-focused browser extension (Chrome and Firefox, Manifest V3) that exports WhatsApp Web chats to TXT, JSON or CSV. Everything runs in your browser: no data is sent anywhere unless you enable the optional Gemini AI features with your own API key.
 
 ---
 
-## Project Structure
+## Extraction engines
 
-```
-WA-Exporter/
-├── manifest.json                  # Manifest V3 configuration (Chrome & Firefox)
-├── background.js                  # Background service worker & API proxy
-├── README.md                      # Documentation
-├── .gitignore                     # Git ignore rules
-├── ai/
-│   └── gemini.js                  # Batched Gemini vision & audio STT client, model cascade & rate limiter
-├── db/
-│   ├── page-script.js             # MAIN-world IndexedDB, audio blob interceptor & canvas engine
-│   └── bridge.js                  # Content-script postMessage bridge
-├── extraction/
-│   ├── selectors.js               # WhatsApp Web DOM selectors
-│   ├── parsers.js                 # Message element parsers & date format detector
-│   ├── scroller.js                # DOM scroller with visual indexing & phone sync
-│   └── main.js                    # Extraction coordinator & background auto-actions
-└── popup/
-    ├── popup.html                 # Extension popup interface with AI options & progress
-    ├── popup.css                  # UI styling with dark mode support
-    └── popup.js                   # Popup UI logic, formatters, and event listeners
-```
+* **Auto (default)**: reads the open chat from WhatsApp Web's own local message store through a minimal, read-only build of [WA-JS](https://github.com/wppconnect-team/wa-js). It does not scroll, so it is faster than the DOM engine (about 17 messages per second, paced on purpose) and gets exact timestamps, types, line breaks, reactions, poll votes and sender names. If WA-JS cannot be used, the export falls back to the DOM engine automatically.
+* **Classic DOM**: auto-scrolls the chat and parses the rendered messages, as in v2.
+
+### How the WA-JS engine stays read-only
+
+* It is injected only when you start an export, never when WhatsApp loads or when you open the popup.
+* The bundle is vendored and version-pinned (`vendor/wa-js/`); no remote code is ever loaded.
+* Only WA-JS' module loader is bundled. The WhatsApp modules it reads (chat and message collections, the local message, reaction and poll-vote tables, contacts) are imported by name, and only if WhatsApp has already loaded them itself. None of WA-JS' events, patches or telemetry are included.
+* A small facade (`wajs/host.js`) is the only code with access to the bundle and exposes read functions only; `scripts/check-readonly.mjs` enforces the allowlist.
+* Reads are paced in small batches with pauses; one chat at a time.
+* If a WhatsApp Web update breaks compatibility, that WhatsApp version is remembered for 7 days and the DOM engine is used directly.
+
+## Features
+
+* **Scopes**: date range, last *N* messages, or everything.
+* **Formats**:
+  * **TXT**: chronological transcript with replies, media labels, `(forwarded)`/`(edited)` flags, reactions (`[Reactions: 👍2 ❤️1]`) and AI captions/transcripts.
+  * **JSON**: metadata plus one object per message. WA-JS exports add `id`, `chatId`, `fromMe`, `senderId`, `senderLid`, `senderPhone`, `isForwarded`, `isEdited`, `mentions`, `reactions`, `poll` (options with `votes`/`voters`), `location` and `media` (with `status`).
+  * **CSV**: the v2 columns, followed by `MessageId`, `SenderId`, `IsForwarded`, `IsEdited`, `Reactions` and `MediaStatus`. Cells are protected against formula injection.
+* **Media thumbnails**: taken from local sources only (thumbnails stored in the message and WhatsApp's media caches).
+* **Download missing media** (WA-JS, off by default): the same call as tapping *Download*, limited to recent images, stickers and voice notes (14 days by default, 30 at most), 30 per export, one at a time with pauses, stopping at the first expired item.
+* **Load older messages from phone** (WA-JS, off by default): when the local cache ends before the chosen scope, the chat is scrolled and WhatsApp's *"older messages from your phone"* notice is tapped once, then the newly synced messages are read. If a sync brings nothing, it is not repeated for that chat for 7 days.
+* **AI with Google Gemini** (optional, your own API key): image captions in batches of 4 and voice-note transcription (up to 5 minutes), with model fallback, rate limiting and a request budget.
+* **Background execution and cancellation**: you can close the popup while an export runs; any export can be cancelled.
+
+## Privacy and limitations
+
+* Exports contain what WhatsApp Web shows you. In groups, participants that are not in your address book appear with the name they chose; their phone number is never requested and stays empty. For address-book contacts, the number WhatsApp already knows locally is included.
+* Older media may have expired on WhatsApp's servers. It is reported as `media.status: "expired"`; downloading it is not attempted because WhatsApp would ask the sender's phone to upload it again.
+* System notices (pins, security codes, group events) are left out by the WA-JS engine. The DOM engine still exports some of them as regular messages.
+* Cancelling an export currently discards the messages collected so far.
 
 ---
 
 ## Installation
 
 1. Clone or download this repository.
-2. Open your browser's extension management page:
-   * **Chrome / Brave / Edge**: `chrome://extensions/`
-   * **Firefox**: `about:debugging#/runtime/this-firefox`
-3. Enable **Developer mode**.
-4. Click **Load unpacked** (or **Load Temporary Add-on** in Firefox) and select the project folder containing `manifest.json`.
-
----
+2. Open your browser's extension page:
+   * **Chrome / Brave / Edge**: `chrome://extensions/`, enable **Developer mode**, then **Load unpacked** and select the folder that contains `manifest.json`.
+   * **Firefox 128 or later**: `about:debugging#/runtime/this-firefox`, then **Load Temporary Add-on** and select `manifest.json`.
 
 ## Usage
 
-1. Open [WhatsApp Web](https://web.whatsapp.com/) and navigate to the chat you wish to export.
-2. Click the **WA Chat Exporter** extension icon in your browser toolbar.
-3. Choose your **Extraction Scope** (*Date Range*, *By Count*, or *All Cached*).
-4. Choose your **Export Format** (*TXT*, *JSON*, or *CSV*).
-5. Click **Copy Text** or **Download**. You can safely close the popup while extraction runs in the background.
+1. Open [WhatsApp Web](https://web.whatsapp.com/) and open the chat you want to export.
+2. Click the extension icon.
+3. Choose the scope, the format and, under advanced options, the engine and extras.
+4. Click **Copy Text** or **Download**.
 
 ---
 
+## Project structure
+
+```
+WA-Exporter/
+├── manifest.json            # Manifest V3 (Chrome and Firefox)
+├── background.js            # Downloads, Gemini proxy, on-demand WA-JS injection, compatibility cache
+├── ai/gemini.js             # Gemini captions and transcription
+├── db/
+│   ├── bridge.js            # Content-script bridge to the MAIN world (DOM engine)
+│   └── page-script.js       # MAIN world: IndexedDB reads, audio capture, thumbnails (DOM engine)
+├── export/formatters.js     # TXT / JSON / CSV
+├── extraction/
+│   ├── main.js              # Orchestrator: WA-JS first, DOM fallback, media and AI pipeline
+│   ├── wajs-client.js       # Messages to the WA-JS host
+│   ├── wajs-engine.js       # Paced paging, reactions, votes, names, media
+│   ├── wajs-mapper.js       # WA-JS messages to the export schema, merge with DOM results
+│   ├── selectors.js         # DOM engine: selectors
+│   ├── parsers.js           # DOM engine: message parsing
+│   └── scroller.js          # DOM engine: auto-scroll
+├── wajs/host.js             # MAIN world: read-only facade over the WA-JS bundle
+├── vendor/wa-js/<version>/  # Pinned minimal WA-JS bundle, license and build info
+├── popup/                   # Popup UI
+├── scripts/                 # WA-JS build, read-only check, dev Chrome launcher
+└── tests/                   # Node tests with synthetic data
+```
+
+## Development
+
+* Tests: `node --test tests/*.test.cjs`
+* Read-only check of the WA-JS facade: `node scripts/check-readonly.mjs`
+* Rebuild the WA-JS bundle from a pinned tag: `scripts/build-wajs.sh 4.6.1` (the build fails if excluded WA-JS modules or module lookups slip in).
+
 ## License
 
-MIT License. Local and privacy-friendly.
+MIT. The bundled WA-JS build (`vendor/wa-js/`) is © WPPConnect Team, licensed under the Apache License 2.0; see the license files in that folder.

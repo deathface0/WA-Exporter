@@ -11,9 +11,14 @@
     const pad = (n) => n.toString().padStart(2, '0');
     const Formatters = window.WAExporter.Formatters;
 
+    // 'wajs' (v3.0 betas) is stored for some users; it always meant WA-JS with DOM fallback.
+    function normalizeEngine(value) {
+        return value === 'dom' ? 'dom' : 'auto';
+    }
+
     function describeSource(result) {
         if (!result) return '';
-        if (result.engine === 'wajs') return 'via WA-JS';
+        if (result.engine === 'wajs') return result.source === 'wajs+dom' ? 'via WA-JS + phone sync' : 'via WA-JS';
         const base = result.source === 'database' ? 'via database' : 'via DOM scroll';
         return result.fallbackReason ? `${base} (WA-JS fallback: ${result.fallbackReason})` : base;
     }
@@ -87,8 +92,8 @@
             $('advancedContent').style.display = 'flex';
             $('advancedToggleArrow').textContent = '▾';
         }
-        if (storage.extractEngine && $('engineSelect')) {
-            $('engineSelect').value = storage.extractEngine;
+        if ($('engineSelect')) {
+            $('engineSelect').value = normalizeEngine(storage.extractEngine);
         }
         if (storage.downloadMissingMedia !== undefined) {
             $('toggleDownloadMedia').checked = !!storage.downloadMissingMedia;
@@ -189,6 +194,7 @@
         if ($('engineSelect')) {
             $('engineSelect').addEventListener('change', (e) => {
                 browser.storage.local.set({ extractEngine: e.target.value });
+                toggleAdvancedSections();
                 invalidateCache();
             });
         }
@@ -351,6 +357,11 @@
         $('aiOptions').style.display = aiOn ? 'flex' : 'none';
 
         $('downloadMediaOptions').style.display = $('toggleDownloadMedia').checked ? 'flex' : 'none';
+        $('wajsOptions').style.display = currentEngine() === 'dom' ? 'none' : 'block';
+    }
+
+    function currentEngine() {
+        return normalizeEngine($('engineSelect') ? $('engineSelect').value : 'auto');
     }
 
     function invalidateCache() {
@@ -376,7 +387,7 @@
             maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
             model: selectedModel === 'auto' ? null : selectedModel,
             customPrompt: customPrompt || null,
-            engine: $('engineSelect') ? $('engineSelect').value : 'dom',
+            engine: currentEngine(),
             downloadMissingMedia: $('toggleDownloadMedia').checked,
             mediaMaxAgeDays: parseInt($('mediaMaxAgeDays').value, 10) || 14,
             maxMediaDownloads: parseInt($('maxMediaDownloads').value, 10) || 30,
@@ -388,7 +399,7 @@
         if (!p1 || !p2) return false;
         if (p1.chatId && p2.chatId && p1.chatId !== p2.chatId) return false;
         if (p1.mode !== p2.mode) return false;
-        if ((p1.engine || 'dom') !== (p2.engine || 'dom')) return false;
+        if (normalizeEngine(p1.engine) !== normalizeEngine(p2.engine)) return false;
         if (!!p1.downloadMissingMedia !== !!p2.downloadMissingMedia) return false;
         if (!!p1.syncOlderFromPhone !== !!p2.syncOlderFromPhone) return false;
         if (p1.mediaMaxAgeDays !== p2.mediaMaxAgeDays || p1.maxMediaDownloads !== p2.maxMediaDownloads) return false;
@@ -424,15 +435,9 @@
         'extraction/main.js'
     ];
 
+    // Content scripts only (isolated world). db/page-script.js reaches the MAIN world on demand,
+    // when the DOM engine first queries IndexedDB or media (db/bridge.js).
     async function ensureInjected(tabId) {
-        try {
-            await browser.scripting.executeScript({
-                target: { tabId: tabId },
-                world: 'MAIN',
-                files: ['db/page-script.js']
-            });
-        } catch (e) { }
-
         for (const file of REQUIRED_SCRIPTS) {
             try {
                 await browser.scripting.executeScript({
@@ -560,7 +565,7 @@
                     maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
                     model: state.request.model || null,
                     customPrompt: state.request.customPrompt || null,
-                    engine: state.request.engine || 'dom',
+                    engine: normalizeEngine(state.request.engine),
                     downloadMissingMedia: !!state.request.downloadMissingMedia,
                     mediaMaxAgeDays: state.request.mediaMaxAgeDays,
                     maxMediaDownloads: state.request.maxMediaDownloads,
@@ -734,7 +739,7 @@
             maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
             model: selectedModel === 'auto' ? null : selectedModel,
             customPrompt: customPrompt || null,
-            engine: $('engineSelect') ? $('engineSelect').value : 'dom',
+            engine: currentEngine(),
             downloadMissingMedia: $('toggleDownloadMedia').checked,
             mediaMaxAgeDays: parseInt($('mediaMaxAgeDays').value, 10) || 14,
             maxMediaDownloads: parseInt($('maxMediaDownloads').value, 10) || 30,

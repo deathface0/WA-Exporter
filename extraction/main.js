@@ -20,8 +20,13 @@
 
     let activeExtractionPromise = null;
 
-    if (window.__waMainListenerAttached) return;
-    window.__waMainListenerAttached = true;
+    // One message listener per tab. The popup re-injects this script on every open, so a newer
+    // copy (e.g. after an extension reload or update) replaces the previous listener, unless an
+    // export is running: that listener owns its progress and cancellation.
+    if (window.__waMainListener) {
+        if (window.WAExporter.State.status === 'extracting') return;
+        try { browser.runtime.onMessage.removeListener(window.__waMainListener); } catch (e) { }
+    }
 
     function broadcastProgress(count, phase, source, extra = {}) {
         try {
@@ -180,34 +185,17 @@
     async function handleGetChatInfo() {
         const domTitle = getActiveChatTitle();
 
-        let resolvedName = domTitle;
-        let resolvedId = domTitle;
+        // DOM only: opening the popup must not inject anything into the page (no IndexedDB
+        // query, which needs db/page-script.js in the MAIN world).
+        const resolvedName = domTitle;
+        const resolvedId = domTitle;
         let msgCount = 0;
-        let source = 'dom';
+        const source = 'dom';
 
-        // 1. Try IndexedDB first (fastest and most accurate)
-        if (window.WAExporter && window.WAExporter.queryDB) {
-            try {
-                const idbResult = await window.WAExporter.queryDB('count', {}, 500);
-                if (idbResult && idbResult.chatId) {
-                    resolvedName = domTitle || idbResult.chatName || (idbResult.chatId.includes('@') ? idbResult.chatId.split('@')[0] : idbResult.chatId);
-                    resolvedId = idbResult.chatId;
-                    msgCount = idbResult.count || 0;
-                    source = 'database';
-                }
-            } catch (e) {
-                console.warn('[WA-Exporter] IDB chat info query failed, trying DOM fallback:', e.message);
-            }
-        }
-
-        // 2. DOM fallback
-        if (source === 'dom' && domTitle) {
+        if (domTitle) {
             const selectors = window.WAExporter.SELECTORS || {};
             const visibleRows = document.querySelectorAll(selectors.messageRow || 'div.message-in, div.message-out, div[role="row"]');
-            resolvedName = domTitle;
-            resolvedId = domTitle;
             msgCount = visibleRows.length;
-            source = 'dom';
         }
 
         if (!resolvedName) {
@@ -263,8 +251,9 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                 let fallbackReason = null;
                 let wajsPartial = [];
 
-                // 0. Experimental WA-JS engine (opt-in from the popup). Any failure falls through to the DOM path.
-                if (request.engine === 'wajs' && window.WAExporter.WajsEngine) {
+                // 0. WA-JS engine (Auto, the default since v3.0; 'wajs' is its v3.0-beta name).
+                // Any failure falls through to the DOM path.
+                if (request.engine !== 'dom' && window.WAExporter.WajsEngine) {
                     const Engine = window.WAExporter.WajsEngine;
                     const signal = window.WAExporter.State.abortController.signal;
                     const onWajsProgress = (count, phase, total) => {
@@ -764,7 +753,7 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
         }
     }
 
-    browser.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+    window.__waMainListener = (request, _sender, sendResponse) => {
         if (request.action === 'get_chat_info') {
             handleGetChatInfo()
                 .then(res => sendResponse(res))
@@ -822,5 +811,6 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
             sendResponse({ status: 'aborted' });
             return false;
         }
-    });
+    };
+    browser.runtime.onMessage.addListener(window.__waMainListener);
 })();
