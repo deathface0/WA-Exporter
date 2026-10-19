@@ -88,6 +88,18 @@
         </button>
 
         <div id="advancedContent" class="advanced-content" style="display: none;">
+            <!-- Extraction engine -->
+            <div class="input-group-inline">
+                <label class="field-label-inline" for="engineSelect">Engine</label>
+                <select id="engineSelect" class="custom-select">
+                    <option value="dom" selected>Classic DOM (default)</option>
+                    <option value="wajs">WA-JS (experimental)</option>
+                </select>
+            </div>
+            <span class="field-hint">WA-JS reads messages without scrolling. Falls back to DOM if unavailable.</span>
+
+            <div class="divider-line"></div>
+
             <!-- Thumbnails toggle -->
             <div class="setting-row">
                 <label class="switch-label">
@@ -219,6 +231,7 @@
         Exports messages directly from local database with automatic DOM scroll fallback.
     </p>
 
+    <script src="../export/formatters.js"></script>
     <script src="popup.js"></script>
 </body>
 

@@ -9,6 +9,14 @@
 
     const $ = (id) => document.getElementById(id);
     const pad = (n) => n.toString().padStart(2, '0');
+    const Formatters = window.WAExporter.Formatters;
+
+    function describeSource(result) {
+        if (!result) return '';
+        if (result.engine === 'wajs') return 'via WA-JS';
+        const base = result.source === 'database' ? 'via database' : 'via DOM scroll';
+        return result.fallbackReason ? `${base} (WA-JS fallback: ${result.fallbackReason})` : base;
+    }
 
     function formatLocalDatetime(date) {
         return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -31,7 +39,7 @@
             storage = await browser.storage.local.get([
                 'startTime', 'endTime', 'extractMode', 'exportFormat', 'messageCount',
                 'captureThumbnails', 'thumbnailResolution', 'enableAiCaptions', 'enableAiTranscription', 'geminiApiKey', 'maxAiRequests', 'advancedExpanded',
-                'aiModelPreference', 'customAiPrompt', 'promptExpanded'
+                'aiModelPreference', 'customAiPrompt', 'promptExpanded', 'extractEngine'
             ]);
         } catch (e) { }
 
@@ -77,6 +85,9 @@
         if (storage.advancedExpanded) {
             $('advancedContent').style.display = 'flex';
             $('advancedToggleArrow').textContent = '▾';
+        }
+        if (storage.extractEngine && $('engineSelect')) {
+            $('engineSelect').value = storage.extractEngine;
         }
         if (storage.promptExpanded && $('promptContent')) {
             $('promptContent').style.display = 'flex';
@@ -157,6 +168,13 @@
         if ($('customAiPrompt')) {
             $('customAiPrompt').addEventListener('input', (e) => {
                 browser.storage.local.set({ customAiPrompt: e.target.value });
+                invalidateCache();
+            });
+        }
+
+        if ($('engineSelect')) {
+            $('engineSelect').addEventListener('change', (e) => {
+                browser.storage.local.set({ extractEngine: e.target.value });
                 invalidateCache();
             });
         }
@@ -260,7 +278,7 @@
                     cachedResult = message.result;
                     cachedParams = getCurrentParams();
                     const msgCount = message.result.data.length;
-                    const sourceMsg = message.result.source === 'database' ? 'via database' : 'via DOM scroll';
+                    const sourceMsg = describeSource(message.result);
                     const partialNotice = message.result.isPartial ? ' (partial)' : '';
                     setStatus(`Done: ${msgCount.toLocaleString()} messages ready ${sourceMsg}${partialNotice}.`, false);
                     $('copyBtn').disabled = false;
@@ -319,7 +337,8 @@
             geminiApiKey: $('geminiApiKey').value.trim(),
             maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
             model: selectedModel === 'auto' ? null : selectedModel,
-            customPrompt: customPrompt || null
+            customPrompt: customPrompt || null,
+            engine: $('engineSelect') ? $('engineSelect').value : 'dom'
         };
     }
 
@@ -327,6 +346,7 @@
         if (!p1 || !p2) return false;
         if (p1.chatId && p2.chatId && p1.chatId !== p2.chatId) return false;
         if (p1.mode !== p2.mode) return false;
+        if ((p1.engine || 'dom') !== (p2.engine || 'dom')) return false;
         if (p1.captureThumbnails !== p2.captureThumbnails) return false;
         if (p1.thumbnailSize !== p2.thumbnailSize) return false;
         if (p1.enableAiCaptions !== p2.enableAiCaptions) return false;
@@ -352,7 +372,10 @@
         'extraction/selectors.js',
         'extraction/parsers.js',
         'extraction/scroller.js',
+        'export/formatters.js',
         'extraction/wajs-client.js',
+        'extraction/wajs-mapper.js',
+        'extraction/wajs-engine.js',
         'extraction/main.js'
     ];
 
@@ -491,10 +514,11 @@
                     geminiApiKey: $('geminiApiKey').value.trim(),
                     maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
                     model: state.request.model || null,
-                    customPrompt: state.request.customPrompt || null
+                    customPrompt: state.request.customPrompt || null,
+                    engine: state.request.engine || 'dom'
                 } : getCurrentParams();
 
-                const sourceMsg = state.result.source === 'database' ? 'via database' : 'via DOM scroll';
+                const sourceMsg = describeSource(state.result);
                 const partialNotice = state.result.isPartial ? ' (partial)' : '';
                 setStatus(`Ready: ${state.result.data.length.toLocaleString()} messages extracted ${sourceMsg}${partialNotice}.`, false);
             }
@@ -615,6 +639,12 @@
                     phaseEl.textContent = 'Extraction complete';
                 } else if (phase === 'reading_database') {
                     phaseEl.textContent = 'Reading database…';
+                } else if (phase === 'wajs_loading') {
+                    phaseEl.textContent = 'Loading WA-JS engine…';
+                } else if (phase === 'wajs_paging') {
+                    phaseEl.textContent = 'Reading messages (WA-JS)…';
+                } else if (phase === 'engine_fallback') {
+                    phaseEl.textContent = 'WA-JS unavailable, using DOM…';
                 } else if (phase === 'capturing_thumbnails') {
                     phaseEl.textContent = `Rendering thumbnails (${count})…`;
                 } else {
@@ -648,7 +678,8 @@
             geminiApiKey: $('geminiApiKey').value.trim(),
             maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
             model: selectedModel === 'auto' ? null : selectedModel,
-            customPrompt: customPrompt || null
+            customPrompt: customPrompt || null,
+            engine: $('engineSelect') ? $('engineSelect').value : 'dom'
         };
 
         if (mode === 'date') {
@@ -695,171 +726,6 @@
         return response;
     }
 
-    /* ── Formatters ── */
-
-    function buildExportMetadata(messages, params = {}) {
-        const chat = activeChatTitle || 'WhatsApp Chat';
-        const now = new Date();
-        const exportDateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-
-        const mode = params.mode || 'all';
-        let scopeStr = 'All Messages';
-        if (mode === 'date') {
-            const s = params.startTime;
-            const e = params.endTime;
-            const sFmt = s ? new Date(s).toLocaleString() : 'Start';
-            const eFmt = e ? new Date(e).toLocaleString() : 'End';
-            scopeStr = `Date Range (${sFmt} to ${eFmt})`;
-        } else if (mode === 'count') {
-            const count = params.messageCount || params.count || messages.length;
-            scopeStr = `Last ${count} Messages`;
-        } else {
-            scopeStr = `All Messages (${messages.length.toLocaleString()})`;
-        }
-
-        return {
-            chatName: chat,
-            exportDate: exportDateStr,
-            exportTimestamp: now.getTime(),
-            scope: mode,
-            scopeLabel: scopeStr,
-            totalMessages: messages.length
-        };
-    }
-
-    function formatAsTxt(messages, meta) {
-        const valid = (messages || []).filter(m => (m.content && m.content.trim() !== '') || m.mediaUrl);
-        const header = [
-            '==================================================',
-            `  WhatsApp Chat Export: ${meta.chatName}`,
-            `  Exported On: ${meta.exportDate}`,
-            `  Scope: ${meta.scopeLabel}`,
-            `  Total Messages: ${valid.length.toLocaleString()}`,
-            '==================================================',
-            '',
-            ''
-        ].join('\n');
-
-        const body = valid.map(m => {
-            let content = m.content || '';
-            if (m.aiCaption) {
-                content += ` [AI: "${m.aiCaption}"]`;
-            }
-            if (m.aiTranscript) {
-                content += ` [AI Transcript: "${m.aiTranscript}"]`;
-            }
-            if (m.rawFormat) {
-                let text = m.rawFormat;
-                if (m.aiCaption) text += ` [AI: "${m.aiCaption}"]`;
-                if (m.aiTranscript) text += ` [AI Transcript: "${m.aiTranscript}"]`;
-                return text;
-            }
-            return `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.sender}: ${content}`;
-        }).join('\n');
-
-        return header + body;
-    }
-
-    function cleanMessageForExport(m, params = {}) {
-        const includeThumbnails = params && params.captureThumbnails !== false;
-        const item = {
-            timestamp: m.timestamp,
-            sender: m.sender,
-            type: m.type,
-            content: m.content
-        };
-        // Always delete thumbnail after processed by AI, or if thumbnails disabled
-        if (includeThumbnails && m.thumbnail) {
-            item.thumbnail = m.thumbnail;
-        }
-        if (m.aiCaption) {
-            item.aiCaption = m.aiCaption;
-        }
-        if (m.aiTranscript) {
-            item.aiTranscript = m.aiTranscript;
-        }
-        item.quotedMessage = m.quotedMessage || null;
-        item.mediaUrl = m.mediaUrl || null;
-        item.rawFormat = m.rawFormat;
-        return item;
-    }
-
-    function formatAsJson(messages, meta, params = {}) {
-        const valid = (messages || []).filter(m => (m.content && m.content.trim() !== '') || m.mediaUrl);
-        const cleaned = valid.map(m => cleanMessageForExport(m, params));
-        return JSON.stringify({
-            metadata: {
-                chatName: meta.chatName,
-                exportedAt: meta.exportDate,
-                exportTimestamp: meta.exportTimestamp,
-                scope: meta.scope,
-                scopeLabel: meta.scopeLabel,
-                totalMessages: cleaned.length
-            },
-            messages: cleaned
-        }, null, 2);
-    }
-
-    function escapeCsvCell(val) {
-        if (val === null || val === undefined) return '""';
-        let str = String(val);
-        if (/^[=+\-@]/.test(str)) {
-            str = "'" + str;
-        }
-        str = str.replace(/"/g, '""');
-        return `"${str}"`;
-    }
-
-    function formatAsCsv(messages, meta, params = {}) {
-        const includeThumbnails = params && params.captureThumbnails !== false;
-        const valid = (messages || []).filter(m => (m.content && m.content.trim() !== '') || m.mediaUrl);
-        const metaComments = [
-            `# WhatsApp Chat Export: ${meta.chatName}`,
-            `# Exported On: ${meta.exportDate}`,
-            `# Scope: ${meta.scopeLabel} | Total Messages: ${valid.length}`
-        ];
-
-        const headers = ['Timestamp', 'Date', 'Time', 'Sender', 'Type', 'Content', 'AICaption', 'AITranscript', 'Thumbnail', 'QuotedSender', 'QuotedContent', 'MediaURL'];
-        const rows = valid.map(m => {
-            const d = new Date(m.timestamp);
-            const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-            const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-            const quotedSender = m.quotedMessage?.sender || '';
-            const quotedContent = m.quotedMessage?.content || '';
-            const thumbnailVal = includeThumbnails ? (m.thumbnail || '') : '';
-
-            return [
-                escapeCsvCell(m.timestamp),
-                escapeCsvCell(dateStr),
-                escapeCsvCell(timeStr),
-                escapeCsvCell(m.sender),
-                escapeCsvCell(m.type),
-                escapeCsvCell(m.content),
-                escapeCsvCell(m.aiCaption || ''),
-                escapeCsvCell(m.aiTranscript || ''),
-                escapeCsvCell(thumbnailVal),
-                escapeCsvCell(quotedSender),
-                escapeCsvCell(quotedContent),
-                escapeCsvCell(m.mediaUrl || '')
-            ].join(',');
-        });
-
-        return [...metaComments, headers.join(','), ...rows].join('\r\n');
-    }
-
-    function formatMessages(messages, format, params) {
-        const meta = buildExportMetadata(messages, params);
-        switch (format) {
-            case 'json':
-                return { text: formatAsJson(messages, meta, params), mime: 'application/json', ext: 'json' };
-            case 'csv':
-                return { text: formatAsCsv(messages, meta, params), mime: 'text/csv;charset=utf-8;', ext: 'csv' };
-            case 'txt':
-            default:
-                return { text: formatAsTxt(messages, meta), mime: 'text/plain;charset=utf-8;', ext: 'txt' };
-        }
-    }
-
     /* ── Export Actions (Copy / Download) ── */
 
     async function copyToClipboard(text) {
@@ -888,21 +754,6 @@
         });
     }
 
-    function generateFilename(ext) {
-        const mode = document.querySelector('input[name="extractMode"]:checked').value;
-        const cleanTitle = activeChatTitle.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 25) || 'chat';
-        const ts = Date.now();
-
-        if (mode === 'date') {
-            const start = $('startTime').value.split('T')[0];
-            const end = $('endTime').value.split('T')[0];
-            return `WA_${cleanTitle}_${start}_to_${end}_${ts}.${ext}`;
-        } else if (mode === 'count') {
-            return `WA_${cleanTitle}_${$('messageCount').value}msgs_${ts}.${ext}`;
-        }
-        return `WA_${cleanTitle}_all_${ts}.${ext}`;
-    }
-
     /* ── Main Action Handler ── */
 
     async function handleAction(action) {
@@ -918,13 +769,13 @@
 
         // 1. If we already have valid cached extraction results matching current parameters, export immediately!
         if (cachedResult && cachedResult.data && cachedResult.data.length > 0 && areParamsEqual(cachedParams, currentParams)) {
-            const formatted = formatMessages(cachedResult.data, format, currentParams);
+            const formatted = Formatters.formatMessages(cachedResult.data, format, currentParams, activeChatTitle, cachedResult);
 
             if (action === 'copy') {
                 await copyToClipboard(formatted.text);
                 copyBtn.innerHTML = '<span>✔️</span> Copied!';
             } else {
-                const filename = generateFilename(formatted.ext);
+                const filename = Formatters.generateFilename(activeChatTitle, currentParams, formatted.ext);
                 triggerDownload(filename, formatted.text, formatted.mime);
                 downloadBtn.innerHTML = '<span>✔️</span> Downloaded!';
             }
@@ -965,18 +816,18 @@
                 return;
             }
 
-            const formatted = formatMessages(messages, format, currentParams);
+            const formatted = Formatters.formatMessages(messages, format, currentParams, activeChatTitle, response);
 
             if (action === 'copy') {
                 await copyToClipboard(formatted.text);
                 copyBtn.innerHTML = '<span>✔️</span> Copied!';
             } else {
-                const filename = generateFilename(formatted.ext);
+                const filename = Formatters.generateFilename(activeChatTitle, currentParams, formatted.ext);
                 triggerDownload(filename, formatted.text, formatted.mime);
                 downloadBtn.innerHTML = '<span>✔️</span> Downloaded!';
             }
 
-            const sourceMsg = source === 'database' ? 'via database' : 'via DOM scroll';
+            const sourceMsg = describeSource(response);
             const partialNotice = isPartial ? ' (partial)' : '';
             setStatus(`Done: ${messages.length.toLocaleString()} messages exported ${sourceMsg}${partialNotice}.`, false);
         } catch (err) {

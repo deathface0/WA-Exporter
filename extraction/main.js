@@ -172,6 +172,50 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
 
         activeExtractionPromise = (async () => {
             try {
+                let fallbackReason = null;
+                let wajsPartial = [];
+
+                // 0. Experimental WA-JS engine (opt-in from the popup). Any failure falls through to the DOM path.
+                if (request.engine === 'wajs' && window.WAExporter.WajsEngine) {
+                    const Engine = window.WAExporter.WajsEngine;
+                    const signal = window.WAExporter.State.abortController.signal;
+                    try {
+                        const wajsRes = await Engine.run(request, signal, (count, phase) => {
+                            window.WAExporter.State.progress = { count, phase, source: 'wajs' };
+                            broadcastProgress(count, phase, 'wajs');
+                        });
+                        const processedMessages = await runMediaAndAiPipeline(wajsRes.messages, request);
+                        if (signal.aborted) throw new Error("Aborted");
+                        const res = {
+                            data: processedMessages,
+                            source: 'wajs',
+                            engine: 'wajs',
+                            isPartial: wajsRes.isPartial,
+                            stopReason: wajsRes.stopReason,
+                            fallbackReason: null,
+                            waVersion: wajsRes.waVersion,
+                            wajsVersion: wajsRes.wajsVersion
+                        };
+                        window.WAExporter.State.status = 'completed';
+                        window.WAExporter.State.result = res;
+                        window.WAExporter.State.completedAt = Date.now();
+                        broadcastCompleted(res);
+                        handleBackgroundAutoAction(res, request);
+                        return res;
+                    } catch (err) {
+                        if (err.name === 'WajsUnavailable') {
+                            fallbackReason = err.reason;
+                        } else if (err.name === 'WajsMidRunError') {
+                            fallbackReason = 'midrun: ' + err.message;
+                            wajsPartial = err.partial || [];
+                        } else {
+                            throw err;
+                        }
+                        console.warn('[WA-Exporter] WA-JS engine failed, falling back to DOM:', fallbackReason);
+                        broadcastProgress(wajsPartial.length, 'engine_fallback', 'dom', { reason: fallbackReason });
+                    }
+                }
+
                 // 1. Primary Strategy: IndexedDB (Only accept if it completely satisfies the request)
                 if (window.WAExporter && window.WAExporter.queryDB) {
                     try {
@@ -193,6 +237,11 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                             console.warn('[WA-Exporter] IndexedDB query failed:', err.message);
                         }
 
+                        // Messages collected by WA-JS before a mid-run failure take part in the id merge.
+                        if (wajsPartial.length) {
+                            idbMessages = idbMessages.concat(wajsPartial);
+                        }
+
                         let isComplete = false;
                         if (Array.isArray(idbMessages) && idbMessages.length > 0) {
                             if (request.mode === 'count') {
@@ -212,6 +261,8 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                             const res = {
                                 data: processedMessages,
                                 source: 'database',
+                                engine: 'dom',
+                                fallbackReason,
                                 isPartial: false
                             };
                             window.WAExporter.State.status = 'completed';
@@ -234,7 +285,8 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                             // Merge by ID, keeping unique items safely
                             const mergedMap = new Map();
                             let fallbackIdCounter = 0;
-                            const getSig = (m) => m.id ? m.id : `no_id_${fallbackIdCounter++}_${m.timestamp}`;
+                            const keyOf = window.WAExporter.WajsMapper ? window.WAExporter.WajsMapper.messageKey : (id => id);
+                            const getSig = (m) => m.id ? keyOf(m.id) : `no_id_${fallbackIdCounter++}_${m.timestamp}`;
                             
                             // Insert IDB messages first
                             idbMessages.forEach(m => {
@@ -243,7 +295,11 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                             // Override/merge with DOM messages (they might have better thumbnails/current state)
                             domMessages.forEach(m => {
                                 // If we don't have an ID, we don't overwrite IDB messages, we just append them.
-                                mergedMap.set(getSig(m), m);
+                                const sig = getSig(m);
+                                // WA-JS entries carry exact timestamps and full ids; never replace them with DOM parses.
+                                const prev = mergedMap.get(sig);
+                                if (prev && prev.engine === 'wajs') return;
+                                mergedMap.set(sig, m);
                             });
 
                             let merged = Array.from(mergedMap.values());
@@ -276,6 +332,8 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                             const res = {
                                 data: processedMessages,
                                 source: 'merged',
+                                engine: 'dom',
+                                fallbackReason,
                                 isPartial: !!scrollResult.isPartial
                             };
                             window.WAExporter.State.status = 'completed';
@@ -520,184 +578,6 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
 
     /* ── In-Page Auto Action Handlers & Toast Notifications ── */
 
-    function pad(n) {
-        return String(n).padStart(2, '0');
-    }
-
-    function buildExportMetadata(messages, params = {}, chatTitle = 'WhatsApp Chat') {
-        const now = new Date();
-        const exportDateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-
-        const mode = params.mode || 'all';
-        let scopeStr = 'All Messages';
-        if (mode === 'date') {
-            const s = params.startTime;
-            const e = params.endTime;
-            const sFmt = s ? new Date(s).toLocaleString() : 'Start';
-            const eFmt = e ? new Date(e).toLocaleString() : 'End';
-            scopeStr = `Date Range (${sFmt} to ${eFmt})`;
-        } else if (mode === 'count') {
-            const count = params.count || params.messageCount || messages.length;
-            scopeStr = `Last ${count} Messages`;
-        } else {
-            scopeStr = `All Messages (${messages.length.toLocaleString()})`;
-        }
-
-        return {
-            chatName: chatTitle || 'WhatsApp Chat',
-            exportDate: exportDateStr,
-            exportTimestamp: now.getTime(),
-            scope: mode,
-            scopeLabel: scopeStr,
-            totalMessages: messages.length
-        };
-    }
-
-    function formatAsTxt(messages, meta) {
-        const valid = (messages || []).filter(m => (m.content && m.content.trim() !== '') || m.mediaUrl);
-        const header = [
-            '==================================================',
-            `  WhatsApp Chat Export: ${meta.chatName}`,
-            `  Exported On: ${meta.exportDate}`,
-            `  Scope: ${meta.scopeLabel}`,
-            `  Total Messages: ${valid.length.toLocaleString()}`,
-            '==================================================',
-            '',
-            ''
-        ].join('\n');
-
-        const body = valid.map(m => {
-            let extra = '';
-            if (m.aiCaption) {
-                extra += ` [AI: "${m.aiCaption}"]`;
-            }
-            if (m.aiTranscript) {
-                extra += ` [Transcript: "${m.aiTranscript}"]`;
-            }
-
-            if (m.rawFormat) {
-                return `${m.rawFormat}${extra}`;
-            }
-
-            let content = (m.content || '') + extra;
-            return `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.sender}: ${content}`;
-        }).join('\n');
-
-        return header + body;
-    }
-
-    function cleanMessageForExport(m, params = {}) {
-        const includeThumbnails = params.captureThumbnails !== false;
-        const item = {
-            timestamp: m.timestamp,
-            sender: m.sender,
-            type: m.type,
-            content: m.content
-        };
-        // Always delete thumbnail after processed by AI, or if thumbnails disabled
-        if (includeThumbnails && m.thumbnail) {
-            item.thumbnail = m.thumbnail;
-        }
-        if (m.aiCaption) {
-            item.aiCaption = m.aiCaption;
-        }
-        if (m.aiTranscript) {
-            item.aiTranscript = m.aiTranscript;
-        }
-        item.quotedMessage = m.quotedMessage || null;
-        item.mediaUrl = m.mediaUrl || null;
-        item.rawFormat = m.rawFormat;
-        return item;
-    }
-
-    function formatAsJson(messages, meta, params = {}) {
-        const valid = (messages || []).filter(m => (m.content && m.content.trim() !== '') || m.mediaUrl);
-        const cleaned = valid.map(m => cleanMessageForExport(m, params));
-        return JSON.stringify({
-            metadata: {
-                chatName: meta.chatName,
-                exportedAt: meta.exportDate,
-                exportTimestamp: meta.exportTimestamp,
-                scope: meta.scope,
-                scopeLabel: meta.scopeLabel,
-                totalMessages: cleaned.length
-            },
-            messages: cleaned
-        }, null, 2);
-    }
-
-    function escapeCsvCell(val) {
-        if (val === null || val === undefined) return '""';
-        const str = String(val).replace(/"/g, '""');
-        return `"${str}"`;
-    }
-
-    function formatAsCsv(messages, meta, params = {}) {
-        const includeThumbnails = params.captureThumbnails !== false;
-        const valid = (messages || []).filter(m => (m.content && m.content.trim() !== '') || m.mediaUrl);
-        const metaComments = [
-            `# WhatsApp Chat Export: ${meta.chatName}`,
-            `# Exported On: ${meta.exportDate}`,
-            `# Scope: ${meta.scopeLabel} | Total Messages: ${valid.length}`
-        ];
-
-        const headers = ['Timestamp', 'Date', 'Time', 'Sender', 'Type', 'Content', 'AICaption', 'AITranscript', 'Thumbnail', 'QuotedSender', 'QuotedContent', 'MediaURL'];
-        const rows = valid.map(m => {
-            const d = new Date(m.timestamp);
-            const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-            const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-            const quotedSender = m.quotedMessage?.sender || '';
-            const quotedContent = m.quotedMessage?.content || '';
-            const thumbnailVal = includeThumbnails ? (m.thumbnail || '') : '';
-
-            return [
-                escapeCsvCell(m.timestamp),
-                escapeCsvCell(dateStr),
-                escapeCsvCell(timeStr),
-                escapeCsvCell(m.sender),
-                escapeCsvCell(m.type),
-                escapeCsvCell(m.content),
-                escapeCsvCell(m.aiCaption || ''),
-                escapeCsvCell(m.aiTranscript || ''),
-                escapeCsvCell(thumbnailVal),
-                escapeCsvCell(quotedSender),
-                escapeCsvCell(quotedContent),
-                escapeCsvCell(m.mediaUrl || '')
-            ].join(',');
-        });
-
-        return [...metaComments, headers.join(','), ...rows].join('\r\n');
-    }
-
-    function formatMessages(messages, format, params, chatTitle) {
-        const meta = buildExportMetadata(messages, params, chatTitle);
-        switch (format) {
-            case 'json':
-                return { text: formatAsJson(messages, meta, params), mime: 'application/json', ext: 'json' };
-            case 'csv':
-                return { text: formatAsCsv(messages, meta, params), mime: 'text/csv;charset=utf-8;', ext: 'csv' };
-            case 'txt':
-            default:
-                return { text: formatAsTxt(messages, meta), mime: 'text/plain;charset=utf-8;', ext: 'txt' };
-        }
-    }
-
-    function generateFilename(chatTitle, params = {}, ext = 'txt') {
-        const cleanTitle = (chatTitle || 'chat').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 25) || 'chat';
-        const ts = Date.now();
-        const mode = params.mode || 'all';
-
-        if (mode === 'date') {
-            const start = params.start ? new Date(params.start).toISOString().split('T')[0] : 'start';
-            const end = params.end ? new Date(params.end).toISOString().split('T')[0] : 'end';
-            return `WA_${cleanTitle}_${start}_to_${end}_${ts}.${ext}`;
-        } else if (mode === 'count') {
-            const count = params.count || params.messageCount || 'count';
-            return `WA_${cleanTitle}_${count}msgs_${ts}.${ext}`;
-        }
-        return `WA_${cleanTitle}_all_${ts}.${ext}`;
-    }
-
     async function copyToClipboard(text) {
         try {
             if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -798,13 +678,15 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
         const format = request.format || 'txt';
         const chatTitle = window.WAExporter.State.chatName || 'WhatsApp Chat';
 
+        const Formatters = window.WAExporter.Formatters;
+
         if (intent === 'download') {
-            const formatted = formatMessages(res.data, format, request, chatTitle);
-            const filename = generateFilename(chatTitle, request, formatted.ext);
+            const formatted = Formatters.formatMessages(res.data, format, request, chatTitle, res);
+            const filename = Formatters.generateFilename(chatTitle, request, formatted.ext);
             triggerDownload(filename, formatted.text, formatted.mime);
             showToast(`📥 Export complete! Downloaded ${res.data.length.toLocaleString()} messages.`);
         } else if (intent === 'copy') {
-            const formatted = formatMessages(res.data, format, request, chatTitle);
+            const formatted = Formatters.formatMessages(res.data, format, request, chatTitle, res);
             copyToClipboard(formatted.text).then(ok => {
                 if (ok) {
                     showToast(`📋 Export complete! Copied ${res.data.length.toLocaleString()} messages to clipboard.`);
