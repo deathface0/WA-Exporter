@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds WA-JS (@wppconnect/wa-js) from a pinned upstream tag under a custom
-# global name and vendors it into vendor/wa-js/<version>/.
+# Builds a minimal WA-JS (@wppconnect/wa-js) bundle from a pinned upstream tag and
+# vendors it into vendor/wa-js/<version>/. The entry is scripts/wajs-entry/entry.ts:
+# module loader + read-only finders only (no events, patches or telemetry).
 #
 #   scripts/build-wajs.sh 4.7.1 [4.6.1 ...]
 #
@@ -39,11 +40,29 @@ for VERSION in "$@"; do
     # --ignore-scripts: skip upstream lifecycle hooks (husky, prepare-time build).
     (cd "$SRC" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error)
 
+    cp "$REPO_DIR/scripts/wajs-entry/entry.ts" "$SRC/src/wa-exporter-entry.ts"
+    mkdir -p "$SRC/src/wa-exporter-stubs"
+    cp "$REPO_DIR"/scripts/wajs-entry/stubs/*.ts "$SRC/src/wa-exporter-stubs/"
+
     cat > "$SRC/webpack.wa-exporter.cjs" <<EOF
+const path = require('path');
+const webpack = require('webpack');
 const base = require('./webpack.config.js');
+const stub = (name) => path.resolve(__dirname, 'src/wa-exporter-stubs', name);
 module.exports = (env, argv) => {
   const config = base(env, argv);
+  config.entry = './src/wa-exporter-entry.ts';
   config.output.library = { name: '$GLOBAL_NAME', type: 'global' };
+  config.plugins.push(
+    // exportModule imports these; upstream versions register telemetry and a load-time patch.
+    new webpack.NormalModuleReplacementPlugin(/(^|\\/)gtag\$/, stub('gtag.ts')),
+    new webpack.NormalModuleReplacementPlugin(/chat\\/functions\\/setChatList\$/, stub('setChatList.ts')),
+    // exportModule only needs wrapFunction; util/index pulls the whole library via createWid.
+    new webpack.NormalModuleReplacementPlugin(/^\\.\\.\\/util\$/, (resource) => {
+      const issuer = (resource.contextInfo && resource.contextInfo.issuer) || '';
+      if (issuer.endsWith(path.join('whatsapp', 'exportModule.ts'))) resource.request = '../util/wrapFunction';
+    })
+  );
   return config;
 };
 EOF
@@ -51,9 +70,25 @@ EOF
 
     BUNDLE="$SRC/dist/wppconnect-wa.js"
     [[ -s "$BUNDLE" ]] || { echo "[build-wajs] Build produced no bundle" >&2; exit 1; }
-    if ! grep -q "$GLOBAL_NAME" "$BUNDLE"; then
-        echo "[build-wajs] Global name not found in bundle" >&2; exit 1
+    if ! grep -q "$GLOBAL_NAME" "$BUNDLE" || ! grep -q 'wa-exporter-minimal' "$BUNDLE"; then
+        echo "[build-wajs] Global name or minimal flavor marker not found in bundle" >&2; exit 1
     fi
+    # Anything from these upstream modules means events, patches or telemetry leaked in.
+    FORBIDDEN=(
+        'isOfficialClient'                              # conn/patch
+        '.presence.subscribe('                          # chat/events/registerPresenceChange
+        'G-MTQ4KY110F' 'analytics.google.com'           # gtag
+        'uppermesh' 'titanchat' 'cloudtrix'             # util/linkPreview servers
+        'web_media_encrypt_upload_in_worker_enabled'    # chat/patch
+        'enable_web_calling'                            # call/enableCallInterface
+        'syncAllStatus' 'WPPConfig'                     # config, status/patch
+        'MsgKey error: obj is null/undefined'           # whatsapp/misc/MsgKey prototype patch
+    )
+    for marker in "${FORBIDDEN[@]}"; do
+        if grep -qF -- "$marker" "$BUNDLE"; then
+            echo "[build-wajs] Forbidden marker in bundle: $marker" >&2; exit 1
+        fi
+    done
 
     rm -rf "$OUT"
     mkdir -p "$OUT"
@@ -69,6 +104,8 @@ EOF
   "upstream": "$UPSTREAM",
   "commit": "$COMMIT",
   "globalName": "$GLOBAL_NAME",
+  "flavor": "wa-exporter-minimal",
+  "entrySha256": "$(sha256sum "$REPO_DIR/scripts/wajs-entry/entry.ts" | cut -d' ' -f1)",
   "supportedWhatsappWeb": "$SUPPORTED",
   "sha256": "$(sha256sum "$OUT/wa-js.bundle.js" | cut -d' ' -f1)",
   "builtWith": "node $(node --version), npm $(npm --version)"

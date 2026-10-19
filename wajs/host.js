@@ -1,8 +1,8 @@
 (function () {
     'use strict';
 
-    // MAIN-world read-only facade over the vendored WA-JS bundle.
-    // The bundle reference lives only in this closure; nothing else may touch it.
+    // MAIN-world read-only facade over the vendored minimal WA-JS bundle
+    // (scripts/wajs-entry/entry.ts). The bundle reference lives only in this closure.
     // Every core.* access must be listed in scripts/check-readonly.mjs.
 
     if (window.__waExpWajsHost) return;
@@ -28,14 +28,18 @@
     ];
     const JID_FIELDS = ['from', 'to', 'author', 'quotedParticipant', 'quotedRemoteJid'];
 
+    // WhatsApp's own toString() yields the serialized id; `_serialized` is not populated
+    // on current builds (WA-JS' MsgKey prototype patch is excluded from the bundle).
     function toJid(value) {
         if (!value) return null;
         if (typeof value === 'string') return value;
-        return typeof value._serialized === 'string' ? value._serialized : null;
+        if (typeof value._serialized === 'string') return value._serialized;
+        const str = typeof value.toString === 'function' ? value.toString() : '';
+        return str.includes('@') ? str : null;
     }
 
     function waitReady(timeoutMs) {
-        if (core.isReady) return Promise.resolve(true);
+        if (core.loader.isReady) return Promise.resolve(true);
         return new Promise(resolve => {
             const timer = setTimeout(() => resolve(false), timeoutMs);
             core.loader.onReady(() => {
@@ -49,7 +53,8 @@
     function missingFunctions() {
         const required = {
             'chat.getMessages': core.chat && core.chat.getMessages,
-            'chat.getActiveChat': core.chat && core.chat.getActiveChat
+            'chat.getActiveChat': core.chat && core.chat.getActiveChat,
+            'chat.reset': core.chat && core.chat.reset
         };
         return Object.keys(required).filter(name => typeof required[name] !== 'function');
     }
@@ -77,6 +82,9 @@
             fromMe: !!(msg.id && msg.id.fromMe)
         };
         MESSAGE_FIELDS.forEach(f => { out[f] = projectPrimitive(msg[f]); });
+        if (typeof out.t !== 'number' && typeof msg.senderTimestampMs === 'number') {
+            out.t = Math.floor(msg.senderTimestampMs / 1000);
+        }
         JID_FIELDS.forEach(f => { out[f] = toJid(msg[f]); });
 
         out.mentionedJidList = Array.isArray(msg.mentionedJidList) ? msg.mentionedJidList.map(toJid).filter(Boolean) : [];
@@ -103,24 +111,22 @@
     }
 
     async function health(params) {
-        const config = core.config || {};
-        const previewServers = config.linkPreviewApiServers;
         const result = {
             ok: false,
             reason: null,
             wajsVersion: core.version || null,
+            flavor: core.flavor || null,
             supportedWhatsappWeb: core.supportedWhatsappWeb || null,
             waVersion: (window.Debug && window.Debug.VERSION) || null,
             loaderType: (core.loader && core.loader.loaderType) || null,
             isReady: false,
-            gaDisabled: config.disableGoogleAnalytics === true,
-            linkPreviewDisabled: Array.isArray(previewServers) && previewServers.length === 0,
             chat: null,
             missing: []
         };
 
-        if (!result.gaDisabled || !result.linkPreviewDisabled) {
-            result.reason = 'unsafe_config';
+        // Only the minimal build is allowed: the full WA-JS bundle registers patches and events.
+        if (result.flavor !== 'wa-exporter-minimal') {
+            result.reason = 'unexpected_bundle';
             return result;
         }
 
@@ -175,8 +181,8 @@
     }
 
     function release() {
+        core.chat.reset();
         try { delete window.__waExpCore; } catch (e) { }
-        try { delete window.WPPConfig; } catch (e) { }
         return { released: true, globalRemoved: !('__waExpCore' in window) };
     }
 
@@ -195,7 +201,7 @@
             if (action === 'wajs_health') return reply(callbackId, { result: await health(params) });
             if (action === 'wajs_release') return reply(callbackId, { result: release() });
 
-            if (!core.isReady) return reply(callbackId, { error: 'WA-JS not ready' });
+            if (!core.loader.isReady) return reply(callbackId, { error: 'WA-JS not ready' });
 
             if (action === 'wajs_active_chat') return reply(callbackId, { result: getActiveChatInfo() });
 

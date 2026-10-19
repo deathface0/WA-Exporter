@@ -11,16 +11,17 @@ const HOST = join(dirname(fileURLToPath(import.meta.url)), '..', 'wajs', 'host.j
 // Every `core.<path>` the host may use. Adding one requires checking its source
 // in the pinned WA-JS tag: it must not send, mark, modify or query the server.
 const ALLOWED = new Set([
-    'core.isReady',
     'core.version',
+    'core.flavor',
     'core.supportedWhatsappWeb',
     'core.loader',
+    'core.loader.isReady',
     'core.loader.onReady',
     'core.loader.loaderType',
-    'core.config',
     'core.chat',
     'core.chat.getActiveChat',
-    'core.chat.getMessages'
+    'core.chat.getMessages',
+    'core.chat.reset'
 ]);
 
 const DENY = /\b(send\w*|mark\w*|star\w*|pin\w*|archive|unarchive|delete\w*|edit\w*|forward\w*|react\w*|subscribePresence|block\w*|clear|mute|unmute|join\w*|leave|set\w*|queryExists|openChat\w*|keepMessage|requestPhoneNumber|rehydrateMessage)\b/;
@@ -46,10 +47,9 @@ const guards = [...source.matchAll(/!\s*core\b(?!\s*[.[])/g)].length;
 if (captures !== 1) errors.push(`expected exactly one "const core = window.__waExpCore", found ${captures}`);
 if (bareUses !== captures + guards) errors.push(`core used as a bare value ${bareUses - captures - guards} time(s) (passed or aliased)`);
 
-// No aliasing of WA-JS modules into locals (e.g. `const chat = core.chat`), except the
-// plain-data config object which only exposes flags.
+// No aliasing of WA-JS modules into locals (e.g. `const chat = core.chat`).
 for (const match of source.matchAll(/=\s*core\.([A-Za-z_$][\w$]*)\b(?!\s*[.[(])/g)) {
-    if (match[1] !== 'config') errors.push(`module aliased into a local: core.${match[1]}`);
+    errors.push(`module aliased into a local: core.${match[1]}`);
 }
 
 const globalReads = [...source.matchAll(/window\.__waExpCore\b/g)].length;

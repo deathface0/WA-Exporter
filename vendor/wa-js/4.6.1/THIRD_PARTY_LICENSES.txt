@@ -1,14 +1,4 @@
 /*!
- * Compressor.js v1.4.0
- * https://fengyuanchen.github.io/compressorjs
- *
- * Copyright 2018-present Chen Fengyuan
- * Released under the MIT license
- *
- * Date: 2026-10-01T04:45:36.902Z
- */
-
-/*!
  * Copyright 2021 WPPConnect Team
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -73,22 +63,6 @@
  */
 
 /*!
- * Copyright 2025 WPPConnect Team
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-/*!
  * Copyright 2026 WPPConnect Team
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -113,12 +87,17 @@
  */
 
 /*!
- * The buffer module from node.js, for the browser.
+ * WA-Exporter minimal WA-JS entry.
  *
- * @author   Feross Aboukhadijeh <https://feross.org>
- * @license  MIT
+ * Derived from WPPConnect WA-JS (src/index.ts, src/chat/functions/getMessages.ts,
+ * src/chat/functions/getActiveChat.ts), Copyright 2021 WPPConnect Team,
+ * licensed under the Apache License, Version 2.0:
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Modified for WA-Exporter: only the module loader and the stores/finders needed
+ * for read-only export are bundled. No chat/conn/status/contact modules, no
+ * events, no patches, no telemetry. scripts/build-wajs.sh copies this file into
+ * the upstream checkout as src/wa-exporter-entry.ts and verifies the output.
  */
-
-/*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */
 
 /*! wppconnect-team/wa-js v4.6.1 */

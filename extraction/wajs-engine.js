@@ -15,6 +15,10 @@
         maxConsecutiveErrors: 2
     };
 
+    // WhatsApp launched in 2009; anything older is a broken timestamp and must not
+    // drive the date-range stop.
+    const MIN_PLAUSIBLE_T = 1230768000;
+
     class WajsUnavailable extends Error {
         constructor(reason) {
             super('WA-JS unavailable: ' + reason);
@@ -158,19 +162,20 @@
                     break;
                 }
 
-                // Pages come oldest-first; later pages are older, so seq decreases per page.
+                // Pages come oldest-first in WhatsApp's own order, so the next anchor is the
+                // first entry (not the smallest t: timestamps can be missing or out of order).
+                // Later pages are older, so seq decreases per page.
                 const base = -pages * (PACING.pageSize + 1);
                 let fresh = 0;
                 page.forEach((raw, i) => {
                     if (!raw || !raw.id || raws.has(raw.id)) return;
                     raws.set(raw.id, { raw, seq: base + i });
                     if (raw.fromMe && raw.author) ctx.selfJids.add(raw.author);
-                    if (raw.t < oldestT) {
-                        oldestT = raw.t;
-                        anchor = raw.id;
-                    }
+                    if (typeof raw.t === 'number' && raw.t >= MIN_PLAUSIBLE_T && raw.t < oldestT) oldestT = raw.t;
                     fresh++;
                 });
+                const first = page.find(raw => raw && raw.id);
+                if (first) anchor = first.id;
                 if (!fresh) {
                     stopReason = 'no_new_messages';
                     break;

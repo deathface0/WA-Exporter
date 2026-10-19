@@ -4,7 +4,9 @@
   "upstream": "https://github.com/wppconnect-team/wa-js.git",
   "commit": "4b24c7c1e9538c41a6c3db78b49a73650d87924c",
   "globalName": "__waExpCore",
+  "flavor": "wa-exporter-minimal",
+  "entrySha256": "8dd1b4576f87d9490425d4df7eaf115a82fcf69f32358c8034bad52094bf6a65",
   "supportedWhatsappWeb": ">=2.3000.1038792969-alpha",
-  "sha256": "7601d5c201b97494ef78e65a737185ab95e2e8501d89abd684234cc2ad51290a",
+  "sha256": "a0756a23202566fa67779eb2ef298786b7a82c2918086a58db74c0d85d418ce6",
   "builtWith": "node v22.23.2, npm 12.0.2"
 }

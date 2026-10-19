@@ -102,3 +102,18 @@ test('two consecutive page failures throw WajsMidRunError with partial data', as
     const { W } = setup({ failFrom: 1 });
     await assert.rejects(W.WajsEngine.run({ mode: 'all' }, null), err => err.name === 'WajsMidRunError' && err.partial.length === 39);
 });
+
+test('anchors on the first entry of each page, not on the smallest timestamp', async () => {
+    const history = makeHistory();
+    history[50] = Object.assign({}, history[50], { t: null }); // broken timestamp mid-history
+    history[45] = Object.assign({}, history[45], { t: 5 });    // implausible 1970 timestamp
+    const { W, calls } = setup({ history });
+    const res = await W.WajsEngine.run({ mode: 'all' }, null);
+    assert.equal(res.stopReason, 'local_cache_boundary');
+    const pages = calls.filter(c => c.action === 'wajs_get_messages');
+    assert.equal(pages[1].params.id, history[60].id);
+    assert.equal(pages[2].params.id, history[20].id);
+    const dateRes = await setup({ history }).W.WajsEngine.run({ mode: 'date', start: (1760000000 + 30 * 60) * 1000, end: Infinity }, null);
+    assert.equal(dateRes.stopReason, 'reached_start_date');
+    assert.equal(dateRes.isPartial, false);
+});
