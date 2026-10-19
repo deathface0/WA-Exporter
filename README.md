@@ -79,7 +79,7 @@ WA-Exporter/
 ├── wajs/host.js             # MAIN world: read-only facade over the WA-JS bundle
 ├── vendor/wa-js/<version>/  # Pinned minimal WA-JS bundle, license and build info
 ├── popup/                   # Popup UI
-├── scripts/                 # WA-JS build, read-only check, dev Chrome launcher
+├── scripts/                 # WA-JS build and read-only check
 └── tests/                   # Node tests with synthetic data
 ```
 
