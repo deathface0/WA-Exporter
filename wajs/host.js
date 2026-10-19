@@ -18,7 +18,9 @@
     const READY_TIMEOUT_MS = 20000;
     const MAX_PAGE_SIZE = 50;
     const ALLOWED_ACTIONS = ['wajs_health', 'wajs_active_chat', 'wajs_get_messages', 'wajs_release',
-        'wajs_media_info', 'wajs_media_thumbnail', 'wajs_media_audio', 'wajs_media_download'];
+        'wajs_media_info', 'wajs_media_thumbnail', 'wajs_media_audio', 'wajs_media_download',
+        'wajs_addons', 'wajs_people'];
+    const MAX_PEOPLE = 500;
     const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
     // Network download policy (phase 3b): only recent media, never past WhatsApp's re-upload horizon.
     const DEFAULT_MAX_AGE_DAYS = 14;
@@ -65,7 +67,8 @@
             'media.getCached': core.media && core.media.getCached,
             'media.thumbnailFields': core.media && core.media.thumbnailFields,
             'media.info': core.media && core.media.info,
-            'media.download': core.media && core.media.download
+            'media.download': core.media && core.media.download,
+            'modules.missing': core.modules && core.modules.missing
         };
         return Object.keys(required).filter(name => typeof required[name] !== 'function');
     }
@@ -132,7 +135,8 @@
             loaderType: (core.loader && core.loader.loaderType) || null,
             isReady: false,
             chat: null,
-            missing: []
+            missing: [],
+            optionalMissing: []
         };
 
         // Only the minimal build is allowed: the full WA-JS bundle registers patches and events.
@@ -150,6 +154,15 @@
         result.missing = missingFunctions();
         if (result.missing.length) {
             result.reason = 'api_missing:' + result.missing.join(',');
+            return result;
+        }
+
+        // WhatsApp modules are imported by name; renamed ones only cost features, except these.
+        const modules = core.modules.missing();
+        result.optionalMissing = modules.optional || [];
+        if (modules.required && modules.required.length) {
+            result.missing = modules.required;
+            result.reason = 'wa_modules_missing:' + modules.required.join(',');
             return result;
         }
 
@@ -189,6 +202,61 @@
         }
         const msgs = await core.chat.getMessages(chat.id, options);
         return (msgs || []).map(m => projectMessage(m, !!params.includeKeys));
+    }
+
+    function stringList(value, max) {
+        return Array.isArray(value) && value.length <= max && value.every(v => typeof v === 'string');
+    }
+
+    function projectRows(byParent, project) {
+        const out = {};
+        Object.keys(byParent || {}).forEach(parent => {
+            const rows = Array.isArray(byParent[parent]) ? byParent[parent] : [];
+            out[parent] = rows.map(project);
+        });
+        return out;
+    }
+
+    // Reactions and poll votes of messages already listed, read from WhatsApp's local tables.
+    // Optional: an older bundle or WhatsApp build without them yields { unavailable }.
+    async function addons(reactionIds, pollIds) {
+        const out = { reactions: {}, votes: {}, unavailable: [] };
+        if (reactionIds.length) {
+            if (typeof (core.addons && core.addons.getReactionRows) !== 'function') out.unavailable.push('reactions');
+            else out.reactions = projectRows(await core.addons.getReactionRows(reactionIds), r => ({
+                msgKey: projectPrimitive(r.msgKey),
+                sender: projectPrimitive(r.sender),
+                text: projectPrimitive(r.text),
+                timestamp: projectPrimitive(r.timestamp)
+            }));
+        }
+        if (pollIds.length) {
+            if (typeof (core.addons && core.addons.getVoteRows) !== 'function') out.unavailable.push('votes');
+            else out.votes = projectRows(await core.addons.getVoteRows(pollIds), v => ({
+                msgKey: projectPrimitive(v.msgKey),
+                sender: projectPrimitive(v.sender),
+                selected: Array.isArray(v.selected) ? v.selected.filter(n => typeof n === 'number') : [],
+                timestamp: projectPrimitive(v.timestamp)
+            }));
+        }
+        return out;
+    }
+
+    // In-memory contact names (and address-book phone numbers for @lid), never the server.
+    function people(jids) {
+        if (typeof (core.contacts && core.contacts.getPeople) !== 'function') return { unavailable: true, people: {} };
+        const found = core.contacts.getPeople(jids) || {};
+        const out = {};
+        Object.keys(found).forEach(jid => {
+            const p = found[jid] || {};
+            out[jid] = {
+                name: projectPrimitive(p.name),
+                pushname: projectPrimitive(p.pushname),
+                verifiedName: projectPrimitive(p.verifiedName),
+                phone: projectPrimitive(p.phone)
+            };
+        });
+        return { unavailable: false, people: out };
     }
 
     function base64ToBlob(b64, mime) {
@@ -306,6 +374,20 @@
                 }
                 if (params.id !== undefined && typeof params.id !== 'string') return reply(callbackId, { error: 'Invalid id' });
                 return reply(callbackId, { result: await getMessages(params) });
+            }
+
+            if (action === 'wajs_addons') {
+                const reactionIds = params?.reactionIds || [];
+                const pollIds = params?.pollIds || [];
+                if (!stringList(reactionIds, MAX_PAGE_SIZE) || !stringList(pollIds, MAX_PAGE_SIZE)) {
+                    return reply(callbackId, { error: 'Invalid ids' });
+                }
+                return reply(callbackId, { result: await addons(reactionIds, pollIds) });
+            }
+
+            if (action === 'wajs_people') {
+                if (!stringList(params?.jids, MAX_PEOPLE)) return reply(callbackId, { error: 'Invalid jids' });
+                return reply(callbackId, { result: people(params.jids) });
             }
 
             if (action === 'wajs_media_download') {

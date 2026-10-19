@@ -15,6 +15,11 @@
         maxConsecutiveErrors: 2
     };
 
+    // Reactions/poll votes: one batched local read per page; names: one lookup per export.
+    const ADDON_PACING = { minMs: 200, maxMs: 400 };
+    const MAX_PEOPLE_PER_CALL = 500;
+    const PERSON_JID = /@(c\.us|lid)$/;
+
     // Media comes from local caches only (no network), but reads are still spaced out.
     const MEDIA_PACING = { minMs: 200, maxMs: 400 };
     const THUMBNAIL_TYPES = ['image', 'video', 'gif', 'sticker'];
@@ -112,7 +117,8 @@
             chatId,
             chatTitle: health.chat.title,
             isGroup: chatId.endsWith('@g.us'),
-            selfJids: new Set()
+            selfJids: new Set(),
+            people: new Map()
         };
 
         const raws = new Map();
@@ -132,6 +138,61 @@
                 messages = messages.slice(messages.length - targetCount);
             }
             return messages;
+        }
+
+        // Attaches reactionRows/voteRows to the page's raws. Failures only cost the extras.
+        async function fetchAddons(page) {
+            const listed = page.filter(raw => raw && raw.id && raws.has(raw.id) && raws.get(raw.id).raw === raw &&
+                !Mapper.EXCLUDED_TYPES.has(raw.type));
+            // hasReaction can be null on database rows: only a definite false skips the lookup.
+            const reactionIds = listed.filter(raw => raw.hasReaction !== false).map(raw => raw.id);
+            const pollIds = listed.filter(raw => raw.type === 'poll_creation').map(raw => raw.id);
+            if (!reactionIds.length && !pollIds.length) return;
+
+            await abortableSleep(randomBetween(ADDON_PACING.minMs, ADDON_PACING.maxMs), signal);
+            let res;
+            try {
+                res = await Wajs.call('wajs_addons', { reactionIds, pollIds });
+            } catch (e) {
+                if (signal && signal.aborted) throw new Error('Aborted');
+                console.warn('[WA-Exporter WA-JS] Reactions/votes lookup failed:', e.message);
+                return;
+            }
+            const unavailable = (res && res.unavailable) || [];
+            if (!unavailable.includes('reactions')) {
+                reactionIds.forEach(id => { raws.get(id).raw.reactionRows = (res.reactions && res.reactions[id]) || []; });
+            }
+            if (!unavailable.includes('votes')) {
+                pollIds.forEach(id => { raws.get(id).raw.voteRows = (res.votes && res.votes[id]) || []; });
+            }
+        }
+
+        // Display names for every person referenced by the collected messages.
+        async function fetchPeople() {
+            const jids = new Set();
+            const add = jid => { if (typeof jid === 'string' && PERSON_JID.test(jid)) jids.add(jid); };
+            raws.forEach(({ raw }) => {
+                add(raw.author);
+                add(raw.from);
+                add(raw.quotedParticipant);
+                (raw.mentionedJidList || []).forEach(add);
+                (raw.reactionRows || []).forEach(r => add(r.sender));
+                (raw.voteRows || []).forEach(v => add(v.sender));
+            });
+            const all = Array.from(jids);
+            for (let i = 0; i < all.length; i += MAX_PEOPLE_PER_CALL) {
+                if (i > 0) await abortableSleep(randomBetween(ADDON_PACING.minMs, ADDON_PACING.maxMs), signal);
+                let res;
+                try {
+                    res = await Wajs.call('wajs_people', { jids: all.slice(i, i + MAX_PEOPLE_PER_CALL) });
+                } catch (e) {
+                    if (signal && signal.aborted) throw new Error('Aborted');
+                    console.warn('[WA-Exporter WA-JS] Contact name lookup failed:', e.message);
+                    return;
+                }
+                const found = (res && res.people) || {};
+                Object.keys(found).forEach(jid => ctx.people.set(jid, found[jid]));
+            }
         }
 
         function exportableCount() {
@@ -194,6 +255,7 @@
                     stopReason = 'no_new_messages';
                     break;
                 }
+                await fetchAddons(page);
 
                 const count = exportableCount();
                 onProgress(count, 'wajs_paging');
@@ -212,6 +274,15 @@
                 stopReason = 'aborted';
             } else {
                 throw e;
+            }
+        }
+
+        if (stopReason !== 'aborted') {
+            try {
+                await fetchPeople();
+            } catch (e) {
+                if (e.message !== 'Aborted') throw e;
+                stopReason = 'aborted';
             }
         }
 
@@ -344,5 +415,5 @@
         return Wajs.call('wajs_release').catch(() => { });
     }
 
-    window.WAExporter.WajsEngine = { run, enrichMedia, release, PACING, MEDIA_PACING, NETWORK_PACING, WajsUnavailable, WajsMidRunError };
+    window.WAExporter.WajsEngine = { run, enrichMedia, release, PACING, MEDIA_PACING, NETWORK_PACING, ADDON_PACING, WajsUnavailable, WajsMidRunError };
 })();

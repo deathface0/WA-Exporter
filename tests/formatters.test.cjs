@@ -83,6 +83,22 @@ test('WA-JS messages append new fields after the v2 ones', () => {
     assert.match(txt, /LID:22: \[Audio\] \(forwarded\)$/);
 });
 
+test('WA-JS reactions go to the CSV Reactions column and a TXT suffix', () => {
+    const wajs = {
+        id: 'false_g@g.us_8_p@lid', timestamp: 1760000000000, sender: 'Ana', type: 'chat', content: 'hi',
+        quotedMessage: null, mediaUrl: null, rawFormat: '[10:00, 09/10/2025] Ana: hi',
+        engine: 'wajs', chatId: 'g@g.us', fromMe: false, senderId: '22@lid', senderLid: '22@lid', senderPhone: null,
+        isForwarded: false, forwardingScore: null, isEdited: true, editedAt: 1, mentions: [],
+        reactions: [{ emoji: 'A', count: 2, senders: [] }, { emoji: 'B', count: 1, senders: [] }]
+    };
+    const txt = Formatters.formatMessages([wajs], 'txt', { mode: 'all' }, TITLE).text;
+    assert.match(txt, /Ana: hi \(edited\) \[Reactions: A2 B1\]$/);
+    const row = csvCells(csvRows(Formatters.formatMessages([wajs], 'csv', { mode: 'all' }, TITLE).text)[1]);
+    assert.equal(row[16], 'A2 B1');
+    const json = JSON.parse(Formatters.formatMessages([wajs], 'json', { mode: 'all' }, TITLE).text);
+    assert.equal(json.messages[0].reactions.length, 2);
+});
+
 test('filenames use local dates from either the popup or the request params', () => {
     assert.match(Formatters.generateFilename('My Chat!', { mode: 'date', startTime: '2025-10-01T00:00', endTime: '2025-10-10T00:00' }, 'json'), /^WA_My_Chat__2025-10-01_to_2025-10-10_\d+\.json$/);
     assert.match(Formatters.generateFilename('c', { mode: 'count', count: 50 }, 'csv'), /^WA_c_50msgs_\d+\.csv$/);

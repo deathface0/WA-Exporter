@@ -26,7 +26,14 @@ const ALLOWED = new Set([
     'core.media.getCached',
     'core.media.thumbnailFields',
     'core.media.info',
-    'core.media.download'
+    'core.media.download',
+    'core.addons',
+    'core.addons.getReactionRows', // local `reactions` table (WAWebDBGetReactions)
+    'core.addons.getVoteRows',     // local `poll-votes` table (getTableVotes + voteFromDbRow)
+    'core.contacts',
+    'core.contacts.getPeople',     // ContactStore.get + lidPnCache, in memory only
+    'core.modules',
+    'core.modules.missing'         // modulesMap lookup by name, initializes nothing
 ]);
 
 // Network calls that are allowlisted despite matching DENY: each is the same call

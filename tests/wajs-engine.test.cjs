@@ -17,12 +17,13 @@ function makeHistory(n = 100) {
     }));
 }
 
-function setup({ history = makeHistory(), health = null, failFrom = Infinity } = {}) {
+function setup({ history = makeHistory(), health = null, failFrom = Infinity, addons = null, people = null } = {}) {
     const W = loadScripts('extraction/wajs-mapper.js', 'extraction/wajs-engine.js');
     Object.assign(W.WajsEngine.PACING, { pauseMinMs: 0, pauseMaxMs: 0, longPauseMinMs: 0, longPauseMaxMs: 0 });
     Object.assign(W.WajsEngine.MEDIA_PACING, { minMs: 0, maxMs: 0 });
     Object.assign(W.WajsEngine.NETWORK_PACING, { minMs: 0, maxMs: 0 });
     const calls = [];
+    Object.assign(W.WajsEngine.ADDON_PACING, { minMs: 0, maxMs: 0 });
     W.Wajs = {
         ensureInjected: async () => ({ ok: true }),
         call: async (action, params) => {
@@ -31,6 +32,14 @@ function setup({ history = makeHistory(), health = null, failFrom = Infinity } =
                 return health || { ok: true, chat: { id: GROUP, title: 'G' }, waVersion: 'wa', wajsVersion: '4.6.1' };
             }
             if (action === 'wajs_release') return { released: true };
+            if (action === 'wajs_addons') {
+                if (addons) return addons(params);
+                return { reactions: {}, votes: {}, unavailable: [] };
+            }
+            if (action === 'wajs_people') {
+                if (people) return people(params);
+                return { unavailable: false, people: {} };
+            }
             if (action === 'wajs_media_thumbnail') {
                 if (params.id === 'boom') throw new Error('read_failed');
                 return params.id.startsWith('cached') ? { dataUri: 'data:image/webp;base64,AA', source: 'cache:lru' } : { dataUri: null, source: null };
@@ -223,4 +232,67 @@ test('network tier stops at the first expired item and clamps max age to 30 days
     assert.equal(msgs[1].media.status, 'expired');
     assert.equal(msgs[0].media.status, 'not_downloaded', 'not attempted after the stop');
     assert.equal(stats.network.stoppedBy, 'expired');
+});
+
+test('addons: one batched lookup per page, polls only for poll_creation, definite false skipped', async () => {
+    const history = makeHistory(50).map((m, i) => Object.assign(m, {
+        fromMe: i % 2 === 0, author: i % 2 === 0 ? SELF : '222@lid',
+        hasReaction: i === 10 ? false : (i === 11 ? true : null),
+        type: i === 49 ? 'poll_creation' : m.type,
+        pollOptions: i === 49 ? [{ name: 'A', localId: 0 }, { name: 'B', localId: 1 }] : []
+    }));
+    const r11 = history[11].id;
+    const p49 = history[49].id;
+    const { W, calls } = setup({
+        history,
+        addons: (params) => ({
+            reactions: { [r11]: [{ msgKey: `false_${GROUP}_X_222@lid`, sender: '222@lid', text: 'R', timestamp: 1 }] },
+            votes: { [p49]: [{ msgKey: `false_${GROUP}_V_333@lid`, sender: '333@lid', selected: [1], timestamp: 2 }] },
+            unavailable: []
+        }),
+        people: (params) => ({ unavailable: false, people: { '222@lid': { name: 'Bea', pushname: null, verifiedName: null, phone: null } } })
+    });
+    const res = plain(await W.WajsEngine.run({ mode: 'all' }, null));
+    const addonCalls = calls.filter(c => c.action === 'wajs_addons');
+    assert.equal(addonCalls.length, calls.filter(c => c.action === 'wajs_get_messages').length - 1, 'one per non-empty page');
+    const allReactionIds = addonCalls.flatMap(c => c.params.reactionIds);
+    assert.ok(!allReactionIds.includes(history[10].id), 'hasReaction false is skipped');
+    assert.ok(allReactionIds.includes(r11));
+    assert.ok(!allReactionIds.includes(history[0].id), 'excluded system entries are skipped');
+    assert.deepEqual(addonCalls.flatMap(c => c.params.pollIds), [p49]);
+    assert.ok(addonCalls.every(c => c.params.reactionIds.length <= 50));
+
+    const peopleCalls = calls.filter(c => c.action === 'wajs_people');
+    assert.equal(peopleCalls.length, 1);
+    assert.deepEqual([...peopleCalls[0].params.jids].sort(), ['111@lid', '222@lid', '333@lid']);
+
+    const reacted = res.messages.find(m => m.id === r11);
+    assert.deepEqual(reacted.reactions, [{ emoji: 'R', count: 1, senders: [{ jid: '222@lid', name: 'Bea', timestamp: 1 }] }]);
+    assert.equal(reacted.sender, 'Bea');
+    const poll = res.messages.find(m => m.id === p49);
+    assert.equal(poll.content, '[Poll] Poll: A (0 votes) | B (1 votes)');
+    assert.deepEqual(poll.poll.options[1].voters, [{ jid: '333@lid', name: 'LID:333' }]);
+});
+
+test('addons and people failures only drop the extras', async () => {
+    const { W } = setup({
+        history: makeHistory(30),
+        addons: () => { throw new Error('reactions_unavailable'); },
+        people: () => { throw new Error('boom'); }
+    });
+    const res = plain(await W.WajsEngine.run({ mode: 'all' }, null));
+    assert.equal(res.stopReason, 'local_cache_boundary');
+    assert.equal(res.messages.length, 28);
+    assert.ok(res.messages.every(m => m.reactions === undefined));
+});
+
+test('abort skips the contact name lookup', async () => {
+    const controller = new AbortController();
+    const { W, calls } = setup({
+        addons: () => { controller.abort(); return { reactions: {}, votes: {}, unavailable: [] }; }
+    });
+    const res = plain(await W.WajsEngine.run({ mode: 'all' }, controller.signal));
+    assert.equal(res.stopReason, 'aborted');
+    assert.equal(res.isPartial, true);
+    assert.ok(!calls.some(c => c.action === 'wajs_people'));
 });

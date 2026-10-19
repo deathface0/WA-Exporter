@@ -81,6 +81,8 @@
             if (isWajs(m)) {
                 if (m.isForwarded) flags += ' (forwarded)';
                 if (m.isEdited) flags += ' (edited)';
+                const reactions = formatReactions(m.reactions);
+                if (reactions) flags += ` [Reactions: ${reactions}]`;
             }
             let ai = '';
             if (m.aiCaption) ai += ` [AI: "${m.aiCaption}"]`;

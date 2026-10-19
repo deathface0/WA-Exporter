@@ -121,8 +121,67 @@ test('quoted replies, edits, mentions and null isForwarded', () => {
     assert.match(m.rawFormat, /: \[Replying to Me: "\[Image\] pic"\] reply$/);
     assert.equal(m.isEdited, true);
     assert.equal(m.editedAt, 1760000001000);
-    assert.deepEqual(m.mentions, [{ jid: OTHER }]);
+    assert.deepEqual(m.mentions, [{ jid: OTHER, name: null }]);
     assert.equal(m.isForwarded, false);
+});
+
+const THIRD = '333333333333333@lid';
+
+function ctxWithPeople() {
+    return Object.assign(ctxGroup(), {
+        people: new Map([
+            [OTHER, { name: 'Ana Contact', pushname: 'ana', verifiedName: null, phone: '34600000001' }],
+            [THIRD, { name: null, pushname: 'Third', verifiedName: null, phone: null }]
+        ])
+    });
+}
+
+test('people: address-book name beats notifyName, pushname is a fallback, phone only when known', () => {
+    const ctx = ctxWithPeople();
+    const named = WajsMapper.mapMessage(raw({ body: 'x', notifyName: 'ana' }), ctx);
+    assert.equal(named.sender, 'Ana Contact');
+    assert.equal(named.senderPhone, '34600000001');
+
+    const third = WajsMapper.mapMessage(raw({ body: 'x', author: THIRD, id: `false_${GROUP}_B_${THIRD}` }), ctx);
+    assert.equal(third.sender, 'Third');
+    assert.equal(third.senderPhone, null);
+    const notified = WajsMapper.mapMessage(raw({ body: 'x', author: THIRD, notifyName: 'Notify' }), ctx);
+    assert.equal(notified.sender, 'Notify', 'notifyName wins over pushname from memory');
+
+    const m = plain(WajsMapper.mapMessage(raw({ body: 'hi', mentionedJidList: [OTHER, THIRD, SELF, '444@lid'] }), ctx));
+    assert.deepEqual(m.mentions.map(x => x.name), ['Ana Contact', 'Third', 'Me', null]);
+});
+
+test('reactions are grouped by emoji ignoring skin tone, own rows are "Me"', () => {
+    const m = plain(WajsMapper.mapMessage(raw({
+        body: 'x',
+        reactionRows: [
+            { msgKey: `false_${GROUP}_R1_${OTHER}`, sender: OTHER, text: '\u{1F44D}', timestamp: 1 },
+            { msgKey: `true_${GROUP}_R2_${SELF}`, sender: SELF, text: '\u{1F44D}\u{1F3FD}', timestamp: 2 },
+            { msgKey: `false_${GROUP}_R3_${THIRD}`, sender: THIRD, text: '\u2764\uFE0F', timestamp: 3 },
+            { msgKey: 'x', sender: THIRD, text: '', timestamp: 4 }
+        ]
+    }), ctxWithPeople()));
+    assert.deepEqual(m.reactions.map(r => [r.emoji, r.count]), [['\u{1F44D}', 2], ['\u2764\uFE0F', 1]]);
+    assert.deepEqual(m.reactions[0].senders.map(s => s.name), ['Ana Contact', 'Me']);
+
+    assert.equal(WajsMapper.mapMessage(raw({ body: 'x', reactionRows: [] }), ctxGroup()).reactions, undefined);
+    assert.equal(WajsMapper.mapMessage(raw({ body: 'x' }), ctxGroup()).reactions, undefined);
+});
+
+test('poll votes fill options and the "(N votes)" content like the DOM engine', () => {
+    const m = plain(WajsMapper.mapMessage(raw({
+        type: 'poll_creation', pollName: 'Q?', pollSelectableOptionsCount: 2,
+        pollOptions: [{ name: 'A', localId: 0 }, { name: 'B', localId: 1 }, { name: 'C', localId: 2 }],
+        voteRows: [
+            { msgKey: `false_${GROUP}_V1_${OTHER}`, sender: OTHER, selected: [0, 1], timestamp: 1 },
+            { msgKey: `true_${GROUP}_V2_${SELF}`, sender: SELF, selected: [1], timestamp: 2 },
+            { msgKey: `false_${GROUP}_V3_${THIRD}`, sender: THIRD, selected: [], timestamp: 3 }
+        ]
+    }), ctxWithPeople()));
+    assert.equal(m.content, '[Poll] Q?: A (1 votes) | B (2 votes) | C (0 votes)');
+    assert.deepEqual(m.poll.options.map(o => [o.name, o.votes]), [['A', 1], ['B', 2], ['C', 0]]);
+    assert.deepEqual(m.poll.options[1].voters.map(v => v.name), ['Ana Contact', 'Me']);
 });
 
 test('messageKey matches WA-JS/IndexedDB ids with bare DOM data-ids', () => {

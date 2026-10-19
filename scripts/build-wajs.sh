@@ -40,6 +40,11 @@ for VERSION in "$@"; do
     # --ignore-scripts: skip upstream lifecycle hooks (husky, prepare-time build).
     (cd "$SRC" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error)
 
+    # WA-JS lookups (exportModule/searchId) import every WA* module until one matches,
+    # initializing modules WhatsApp had not loaded: the entry imports WhatsApp modules by name.
+    if grep -nE "from '\./(whatsapp|chat|conn|contact|status|config|wa-exporter-lookups)|exportModule|\.search(Id)?\(" "$REPO_DIR/scripts/wajs-entry/entry.ts" >&2; then
+        echo "[build-wajs] entry.ts must not use WA-JS module lookups (listed above)" >&2; exit 1
+    fi
     cp "$REPO_DIR/scripts/wajs-entry/entry.ts" "$SRC/src/wa-exporter-entry.ts"
     mkdir -p "$SRC/src/wa-exporter-stubs"
     cp "$REPO_DIR"/scripts/wajs-entry/stubs/*.ts "$SRC/src/wa-exporter-stubs/"
@@ -105,7 +110,7 @@ EOF
   "commit": "$COMMIT",
   "globalName": "$GLOBAL_NAME",
   "flavor": "wa-exporter-minimal",
-  "entrySha256": "$(sha256sum "$REPO_DIR/scripts/wajs-entry/entry.ts" | cut -d' ' -f1)",
+  "entrySha256": "$(cd "$REPO_DIR/scripts/wajs-entry" && find . -name '*.ts' | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1)",
   "supportedWhatsappWeb": "$SUPPORTED",
   "sha256": "$(sha256sum "$OUT/wa-js.bundle.js" | cut -d' ' -f1)",
   "builtWith": "node $(node --version), npm $(npm --version)"

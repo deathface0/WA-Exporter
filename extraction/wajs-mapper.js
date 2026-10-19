@@ -32,6 +32,9 @@
         'album'
     ]);
 
+    // WhatsApp groups reactions by emoji regardless of skin tone.
+    const SKIN_TONES = /[\u{1F3FB}-\u{1F3FF}]/gu;
+
     const MEDIA_KINDS = new Set(['image', 'video', 'gif', 'audio', 'ptt', 'document', 'sticker']);
     const THUMBNAIL_KINDS = new Set(['image', 'video', 'gif']);
 
@@ -60,18 +63,63 @@
         return jid && jid.includes('@') ? jid.split('@')[1] : null;
     }
 
+    // ctx.people: jid -> { name, pushname, verifiedName, phone } from WhatsApp's in-memory contacts.
+    function person(jid, ctx) {
+        return (ctx.people && jid && ctx.people.get(jid)) || null;
+    }
+
+    // Address-book name first (as WhatsApp shows it), then the sender's own notify/push name.
     function displayName(jid, notifyName, ctx) {
         if (!jid) return notifyName || 'Contact';
         if (ctx.selfJids && ctx.selfJids.has(jid)) return 'Me';
         if (!ctx.isGroup && ctx.chatTitle) return ctx.chatTitle;
+        const p = person(jid, ctx);
+        if (p && p.name) return p.name;
         if (notifyName) return notifyName;
+        if (p && (p.pushname || p.verifiedName)) return p.pushname || p.verifiedName;
         const server = jidServer(jid);
         if (server === 'c.us') return jidUser(jid);
         if (server === 'lid') return 'LID:' + jidUser(jid);
         return 'Contact';
     }
 
-    function contentFor(kind, raw) {
+    // Author of a reaction or vote row: own rows have a "true_" message key.
+    function actorName(jid, msgKey, ctx) {
+        if (typeof msgKey === 'string' && msgKey.startsWith('true_')) return 'Me';
+        return displayName(jid, null, ctx);
+    }
+
+    function buildReactions(rows, ctx) {
+        const groups = new Map();
+        rows.forEach(r => {
+            if (!r || !r.text) return;
+            const emoji = r.text.replace(SKIN_TONES, '');
+            if (!groups.has(emoji)) groups.set(emoji, []);
+            groups.get(emoji).push({ jid: r.sender || null, name: actorName(r.sender, r.msgKey, ctx), timestamp: r.timestamp });
+        });
+        return Array.from(groups, ([emoji, senders]) => ({ emoji, count: senders.length, senders }))
+            .sort((a, b) => b.count - a.count);
+    }
+
+    // localId -> voters, or null when the votes were not read.
+    function pollTally(raw, ctx) {
+        if (!Array.isArray(raw.voteRows)) return null;
+        const tally = new Map();
+        raw.voteRows.forEach(v => {
+            (v.selected || []).forEach(localId => {
+                const key = Number(localId);
+                if (!tally.has(key)) tally.set(key, []);
+                tally.get(key).push({ jid: v.sender || null, name: actorName(v.sender, v.msgKey, ctx) });
+            });
+        });
+        return tally;
+    }
+
+    function votersFor(tally, option) {
+        return (tally && tally.get(Number(option.localId))) || [];
+    }
+
+    function contentFor(kind, raw, ctx) {
         const label = LABELS[kind];
         switch (kind) {
             case 'chat':
@@ -95,7 +143,10 @@
             case 'vcard':
                 return `${label} ${raw.vcardFormattedName || 'Contact'}`;
             case 'poll': {
-                const names = (raw.pollOptions || []).map(o => o.name).filter(Boolean);
+                // Same "(N votes)" suffix as the DOM engine when the votes are known.
+                const tally = pollTally(raw, ctx);
+                const names = (raw.pollOptions || []).filter(o => o.name)
+                    .map(o => tally ? `${o.name} (${votersFor(tally, o).length} votes)` : o.name);
                 return `${label} ${raw.pollName || 'Poll'}${names.length ? ': ' + names.join(' | ') : ''}`;
             }
             default:
@@ -116,13 +167,20 @@
         return text ? `${label} ${text}` : label;
     }
 
+    function mentionName(jid, ctx) {
+        if (ctx.selfJids && ctx.selfJids.has(jid)) return 'Me';
+        const p = person(jid, ctx);
+        return (p && (p.name || p.pushname || p.verifiedName)) || null;
+    }
+
     function toInt(value) {
         const n = parseInt(value, 10);
         return Number.isFinite(n) ? n : null;
     }
 
     /**
-     * ctx: { chatId, chatTitle, isGroup, selfJids: Set<string> }
+     * ctx: { chatId, chatTitle, isGroup, selfJids: Set<string>, people?: Map<jid, person> }
+     * raw.reactionRows / raw.voteRows are attached by the engine when they could be read.
      * Returns null for entries that are not exported.
      */
     function mapMessage(raw, ctx) {
@@ -140,7 +198,8 @@
         const dateStr = `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
         const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
-        const content = contentFor(kind, raw);
+        const content = contentFor(kind, raw, ctx);
+        const senderPerson = person(senderId, ctx);
 
         let quotedMessage = null;
         if (raw.quotedMsg) {
@@ -175,22 +234,35 @@
             fromMe: !!raw.fromMe,
             senderId,
             senderLid: jidServer(senderId) === 'lid' ? senderId : null,
-            senderPhone: jidServer(senderId) === 'c.us' ? jidUser(senderId) : null,
+            senderPhone: jidServer(senderId) === 'c.us' ? jidUser(senderId) : ((senderPerson && senderPerson.phone) || null),
             isForwarded: !!raw.isForwarded,
             forwardingScore: toInt(raw.forwardingScore),
             isEdited: !!raw.latestEditMsgKey,
             editedAt: typeof raw.latestEditSenderTimestampMs === 'number' ? raw.latestEditSenderTimestampMs : null,
-            mentions: (raw.mentionedJidList || []).map(jid => ({ jid }))
+            mentions: (raw.mentionedJidList || []).map(jid => ({ jid, name: mentionName(jid, ctx) }))
         };
+
+        if (Array.isArray(raw.reactionRows)) {
+            const reactions = buildReactions(raw.reactionRows, ctx);
+            if (reactions.length) msg.reactions = reactions;
+        }
 
         if (kind === 'location') {
             msg.location = { lat: raw.lat, lng: raw.lng, name: raw.loc || null };
         }
         if (kind === 'poll') {
+            const tally = pollTally(raw, ctx);
             msg.poll = {
                 question: raw.pollName || null,
                 selectableCount: toInt(raw.pollSelectableOptionsCount),
-                options: (raw.pollOptions || []).map(o => ({ name: o.name || null }))
+                options: (raw.pollOptions || []).map(o => {
+                    const option = { name: o.name || null };
+                    if (tally) {
+                        option.votes = votersFor(tally, o).length;
+                        option.voters = votersFor(tally, o);
+                    }
+                    return option;
+                })
             };
         }
         if (MEDIA_KINDS.has(kind)) {
