@@ -21,6 +21,13 @@
     const AUDIO_TYPES = ['ptt', 'audio'];
     const MAX_AUDIO_SECONDS = 300;
 
+    // Network tier (opt-in): same call as WhatsApp's "Download" button. Media older than
+    // maxAgeDays is never requested; expired media makes WhatsApp ask the sender to re-upload.
+    const NETWORK_PACING = { minMs: 2000, maxMs: 4000 };
+    const NETWORK_TYPES = ['image', 'sticker', 'ptt', 'audio'];
+    const NETWORK_DEFAULTS = { maxAgeDays: 14, maxDownloads: 30 };
+    const NETWORK_MAX_AGE_LIMIT = 30;
+
     // WhatsApp launched in 2009; anything older is a broken timestamp and must not
     // drive the date-range stop.
     const MIN_PLAUSIBLE_T = 1230768000;
@@ -229,8 +236,10 @@
     /**
      * Fills thumbnails and voice-note audio for WA-JS messages from local sources only
      * (thumbnail fields and WhatsApp's media caches). Updates m.media.status:
-     * 'thumbnail' | 'cached' | 'not_downloaded' | 'error'. Never downloads.
-     * opts: { thumbnails, audio, maxSize }
+     * 'thumbnail' | 'cached' | 'not_downloaded' | 'error'.
+     * With opts.network.enabled, media still missing afterwards is downloaded (recent only,
+     * capped, paced, stopping at the first expired/failed item): adds 'downloaded' | 'expired'.
+     * opts: { thumbnails, audio, maxSize, network: { enabled, maxAgeDays, maxDownloads } }
      */
     async function enrichMedia(messages, opts, signal, onProgress = () => { }) {
         const Wajs = window.WAExporter.Wajs;
@@ -272,7 +281,61 @@
             }
         }
         console.log(`[WA-Exporter WA-JS] Media from local caches: ${stats.thumbnails} thumbnails, ${stats.audio} audio, ${stats.notCached} not cached, ${stats.errors} errors.`);
+
+        if (opts.network && opts.network.enabled) {
+            stats.network = await downloadMissing(work, opts, signal, onProgress);
+        }
         return stats;
+    }
+
+    async function downloadMissing(work, opts, signal, onProgress) {
+        const Wajs = window.WAExporter.Wajs;
+        const maxAgeDays = Math.min(Math.max(1, parseInt(opts.network.maxAgeDays, 10) || NETWORK_DEFAULTS.maxAgeDays), NETWORK_MAX_AGE_LIMIT);
+        const maxDownloads = Math.max(0, parseInt(opts.network.maxDownloads, 10) || NETWORK_DEFAULTS.maxDownloads);
+        const minTimestamp = Date.now() - maxAgeDays * 86400000;
+        const net = { attempted: 0, downloaded: 0, expired: 0, errors: 0, tooOld: 0, overLimit: 0, stoppedBy: null };
+
+        const missing = work.filter(m => m.media.status === 'not_downloaded' && NETWORK_TYPES.includes(m.type) &&
+            (AUDIO_TYPES.includes(m.type) ? opts.audio : opts.thumbnails));
+        const recent = missing.filter(m => typeof m.timestamp === 'number' && m.timestamp >= minTimestamp);
+        net.tooOld = missing.length - recent.length;
+        const queue = recent.slice(-maxDownloads); // newest first within the cap
+        net.overLimit = recent.length - queue.length;
+
+        for (let i = queue.length - 1; i >= 0; i--) {
+            if (signal && signal.aborted) throw new Error('Aborted');
+            if (net.attempted > 0) await abortableSleep(randomBetween(NETWORK_PACING.minMs, NETWORK_PACING.maxMs), signal);
+            const m = queue[i];
+            const isAudio = AUDIO_TYPES.includes(m.type);
+            net.attempted++;
+            onProgress(net.attempted, 'wajs_media_download', queue.length);
+            let res;
+            try {
+                res = await Wajs.call('wajs_media_download', {
+                    id: m.id, allowNetwork: true, want: isAudio ? 'audio' : 'thumbnail',
+                    maxAgeDays, maxSize: opts.maxSize || 160
+                });
+            } catch (e) {
+                if (signal && signal.aborted) throw new Error('Aborted');
+                res = { status: 'error', reason: e.message };
+            }
+            if (res.dataUri) {
+                if (isAudio) m.audioData = res.dataUri;
+                else m.thumbnail = res.dataUri;
+            }
+            m.media.status = res.status;
+            if (res.reason && (res.status === 'expired' || res.status === 'error')) m.media.error = res.reason;
+            if (res.status === 'expired') net.expired++;
+            else if (res.status === 'error') net.errors++;
+            else if (res.status !== 'not_downloaded') net.downloaded++;
+            // Stop at the first expired or failed item: older ones are likely expired too.
+            if (res.status === 'expired' || res.status === 'error') {
+                net.stoppedBy = res.status;
+                break;
+            }
+        }
+        console.log(`[WA-Exporter WA-JS] Network media: ${net.downloaded} downloaded, ${net.expired} expired, ${net.errors} errors, ${net.tooOld} too old, ${net.overLimit} over limit${net.stoppedBy ? ', stopped by ' + net.stoppedBy : ''}.`);
+        return net;
     }
 
     function release() {
@@ -281,5 +344,5 @@
         return Wajs.call('wajs_release').catch(() => { });
     }
 
-    window.WAExporter.WajsEngine = { run, enrichMedia, release, PACING, MEDIA_PACING, WajsUnavailable, WajsMidRunError };
+    window.WAExporter.WajsEngine = { run, enrichMedia, release, PACING, MEDIA_PACING, NETWORK_PACING, WajsUnavailable, WajsMidRunError };
 })();

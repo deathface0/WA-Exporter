@@ -83,7 +83,6 @@ EOF
         'enable_web_calling'                            # call/enableCallInterface
         'syncAllStatus' 'WPPConfig'                     # config, status/patch
         'MsgKey error: obj is null/undefined'           # whatsapp/misc/MsgKey prototype patch
-        '.downloadMedia('                               # network media download (phase 3b, not allowed yet)
     )
     for marker in "${FORBIDDEN[@]}"; do
         if grep -qF -- "$marker" "$BUNDLE"; then

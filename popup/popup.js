@@ -39,7 +39,8 @@
             storage = await browser.storage.local.get([
                 'startTime', 'endTime', 'extractMode', 'exportFormat', 'messageCount',
                 'captureThumbnails', 'thumbnailResolution', 'enableAiCaptions', 'enableAiTranscription', 'geminiApiKey', 'maxAiRequests', 'advancedExpanded',
-                'aiModelPreference', 'customAiPrompt', 'promptExpanded', 'extractEngine'
+                'aiModelPreference', 'customAiPrompt', 'promptExpanded', 'extractEngine',
+                'downloadMissingMedia', 'mediaMaxAgeDays', 'maxMediaDownloads'
             ]);
         } catch (e) { }
 
@@ -88,6 +89,15 @@
         }
         if (storage.extractEngine && $('engineSelect')) {
             $('engineSelect').value = storage.extractEngine;
+        }
+        if (storage.downloadMissingMedia !== undefined) {
+            $('toggleDownloadMedia').checked = !!storage.downloadMissingMedia;
+        }
+        if (storage.mediaMaxAgeDays) {
+            $('mediaMaxAgeDays').value = storage.mediaMaxAgeDays;
+        }
+        if (storage.maxMediaDownloads) {
+            $('maxMediaDownloads').value = storage.maxMediaDownloads;
         }
         if (storage.promptExpanded && $('promptContent')) {
             $('promptContent').style.display = 'flex';
@@ -178,6 +188,22 @@
                 invalidateCache();
             });
         }
+
+        $('toggleDownloadMedia').addEventListener('change', (e) => {
+            browser.storage.local.set({ downloadMissingMedia: e.target.checked });
+            toggleAdvancedSections();
+            invalidateCache();
+        });
+
+        $('mediaMaxAgeDays').addEventListener('change', (e) => {
+            browser.storage.local.set({ mediaMaxAgeDays: e.target.value });
+            invalidateCache();
+        });
+
+        $('maxMediaDownloads').addEventListener('change', (e) => {
+            browser.storage.local.set({ maxMediaDownloads: e.target.value });
+            invalidateCache();
+        });
 
         if ($('aiModelSelect')) {
             $('aiModelSelect').addEventListener('change', (e) => {
@@ -313,6 +339,8 @@
 
         const aiOn = $('toggleAiCaptions').checked;
         $('aiOptions').style.display = aiOn ? 'flex' : 'none';
+
+        $('downloadMediaOptions').style.display = $('toggleDownloadMedia').checked ? 'flex' : 'none';
     }
 
     function invalidateCache() {
@@ -338,7 +366,10 @@
             maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
             model: selectedModel === 'auto' ? null : selectedModel,
             customPrompt: customPrompt || null,
-            engine: $('engineSelect') ? $('engineSelect').value : 'dom'
+            engine: $('engineSelect') ? $('engineSelect').value : 'dom',
+            downloadMissingMedia: $('toggleDownloadMedia').checked,
+            mediaMaxAgeDays: parseInt($('mediaMaxAgeDays').value, 10) || 14,
+            maxMediaDownloads: parseInt($('maxMediaDownloads').value, 10) || 30
         };
     }
 
@@ -347,6 +378,8 @@
         if (p1.chatId && p2.chatId && p1.chatId !== p2.chatId) return false;
         if (p1.mode !== p2.mode) return false;
         if ((p1.engine || 'dom') !== (p2.engine || 'dom')) return false;
+        if (!!p1.downloadMissingMedia !== !!p2.downloadMissingMedia) return false;
+        if (p1.mediaMaxAgeDays !== p2.mediaMaxAgeDays || p1.maxMediaDownloads !== p2.maxMediaDownloads) return false;
         if (p1.captureThumbnails !== p2.captureThumbnails) return false;
         if (p1.thumbnailSize !== p2.thumbnailSize) return false;
         if (p1.enableAiCaptions !== p2.enableAiCaptions) return false;
@@ -515,7 +548,10 @@
                     maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
                     model: state.request.model || null,
                     customPrompt: state.request.customPrompt || null,
-                    engine: state.request.engine || 'dom'
+                    engine: state.request.engine || 'dom',
+                    downloadMissingMedia: !!state.request.downloadMissingMedia,
+                    mediaMaxAgeDays: state.request.mediaMaxAgeDays,
+                    maxMediaDownloads: state.request.maxMediaDownloads
                 } : getCurrentParams();
 
                 const sourceMsg = describeSource(state.result);
@@ -645,6 +681,8 @@
                     phaseEl.textContent = 'Reading messages (WA-JS)…';
                 } else if (phase === 'wajs_media') {
                     phaseEl.textContent = extra.total ? `Reading media cache (${count}/${extra.total})…` : 'Reading media cache…';
+                } else if (phase === 'wajs_media_download') {
+                    phaseEl.textContent = extra.total ? `Downloading media (${count}/${extra.total})…` : 'Downloading media…';
                 } else if (phase === 'engine_fallback') {
                     phaseEl.textContent = 'WA-JS unavailable, using DOM…';
                 } else if (phase === 'capturing_thumbnails') {
@@ -681,7 +719,10 @@
             maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
             model: selectedModel === 'auto' ? null : selectedModel,
             customPrompt: customPrompt || null,
-            engine: $('engineSelect') ? $('engineSelect').value : 'dom'
+            engine: $('engineSelect') ? $('engineSelect').value : 'dom',
+            downloadMissingMedia: $('toggleDownloadMedia').checked,
+            mediaMaxAgeDays: parseInt($('mediaMaxAgeDays').value, 10) || 14,
+            maxMediaDownloads: parseInt($('maxMediaDownloads').value, 10) || 30
         };
 
         if (mode === 'date') {

@@ -21,6 +21,7 @@ function setup({ history = makeHistory(), health = null, failFrom = Infinity } =
     const W = loadScripts('extraction/wajs-mapper.js', 'extraction/wajs-engine.js');
     Object.assign(W.WajsEngine.PACING, { pauseMinMs: 0, pauseMaxMs: 0, longPauseMinMs: 0, longPauseMaxMs: 0 });
     Object.assign(W.WajsEngine.MEDIA_PACING, { minMs: 0, maxMs: 0 });
+    Object.assign(W.WajsEngine.NETWORK_PACING, { minMs: 0, maxMs: 0 });
     const calls = [];
     W.Wajs = {
         ensureInjected: async () => ({ ok: true }),
@@ -33,6 +34,13 @@ function setup({ history = makeHistory(), health = null, failFrom = Infinity } =
             if (action === 'wajs_media_thumbnail') {
                 if (params.id === 'boom') throw new Error('read_failed');
                 return params.id.startsWith('cached') ? { dataUri: 'data:image/webp;base64,AA', source: 'cache:lru' } : { dataUri: null, source: null };
+            }
+            if (action === 'wajs_media_download') {
+                if (params.allowNetwork !== true) throw new Error('Network download not allowed');
+                if (params.id.startsWith('expired')) return { status: 'expired', reason: 'REUPLOADING' };
+                return params.want === 'audio'
+                    ? { status: 'cached', dataUri: 'data:audio/ogg;base64,NET', source: 'network' }
+                    : { status: 'thumbnail', dataUri: 'data:image/webp;base64,NET', source: 'network' };
             }
             if (action === 'wajs_media_audio') {
                 return params.id.startsWith('cached') ? { dataUri: 'data:audio/ogg;base64,AA', source: 'cache:lru' } : { dataUri: null, reason: 'not_cached' };
@@ -165,4 +173,54 @@ test('enrichMedia skips audio when transcription is off and honours abort', asyn
     const controller = new AbortController();
     controller.abort();
     await assert.rejects(W.WajsEngine.enrichMedia([mediaMsg('cached-sticker', 'sticker')], { thumbnails: true }, controller.signal), /Aborted/);
+});
+
+const DAY = 86400000;
+const netOpts = (extra = {}) => ({ thumbnails: true, audio: true, maxSize: 160, network: Object.assign({ enabled: true, maxAgeDays: 14, maxDownloads: 30 }, extra) });
+
+test('network tier is off unless explicitly enabled', async () => {
+    const { W, calls } = setup();
+    await W.WajsEngine.enrichMedia([mediaMsg('miss-a', 'image', { timestamp: Date.now() - DAY })], { thumbnails: true, audio: true }, null);
+    assert.equal(calls.filter(c => c.action === 'wajs_media_download').length, 0);
+});
+
+test('network tier downloads recent missing media, newest first, within the cap', async () => {
+    const { W, calls } = setup();
+    const now = Date.now();
+    const msgs = [
+        mediaMsg('miss-old', 'image', { timestamp: now - 40 * DAY }),
+        mediaMsg('miss-1', 'image', { timestamp: now - 3 * DAY }),
+        mediaMsg('miss-2', 'sticker', { timestamp: now - 2 * DAY }),
+        mediaMsg('miss-3', 'ptt', { timestamp: now - 1 * DAY, duration: 5 }),
+        mediaMsg('miss-video', 'video', { timestamp: now - 1 * DAY })
+    ];
+    const stats = plain(await W.WajsEngine.enrichMedia(msgs, netOpts({ maxDownloads: 2 }), null));
+    const dl = calls.filter(c => c.action === 'wajs_media_download');
+    assert.deepEqual(dl.map(c => c.params.id), ['miss-3', 'miss-2'], 'newest first, capped at 2, videos excluded');
+    assert.ok(dl.every(c => c.params.allowNetwork === true && c.params.maxAgeDays === 14));
+    assert.equal(msgs[3].media.status, 'cached');
+    assert.equal(msgs[3].audioData, 'data:audio/ogg;base64,NET');
+    assert.equal(msgs[2].media.status, 'thumbnail');
+    assert.equal(msgs[1].media.status, 'not_downloaded', 'over the cap');
+    assert.equal(msgs[0].media.status, 'not_downloaded', 'too old, never requested');
+    assert.equal(stats.network.tooOld, 1);
+    assert.equal(stats.network.overLimit, 1);
+    assert.equal(stats.network.downloaded, 2);
+});
+
+test('network tier stops at the first expired item and clamps max age to 30 days', async () => {
+    const { W, calls } = setup();
+    const now = Date.now();
+    const msgs = [
+        mediaMsg('miss-a', 'image', { timestamp: now - 3 * DAY }),
+        mediaMsg('expired-b', 'image', { timestamp: now - 2 * DAY }),
+        mediaMsg('miss-c', 'image', { timestamp: now - 1 * DAY })
+    ];
+    const stats = plain(await W.WajsEngine.enrichMedia(msgs, netOpts({ maxAgeDays: 90 }), null));
+    const dl = calls.filter(c => c.action === 'wajs_media_download');
+    assert.deepEqual(dl.map(c => c.params.id), ['miss-c', 'expired-b']);
+    assert.equal(dl[0].params.maxAgeDays, 30);
+    assert.equal(msgs[1].media.status, 'expired');
+    assert.equal(msgs[0].media.status, 'not_downloaded', 'not attempted after the stop');
+    assert.equal(stats.network.stoppedBy, 'expired');
 });

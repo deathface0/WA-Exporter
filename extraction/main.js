@@ -191,7 +191,12 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                             await Engine.enrichMedia(wajsRes.messages, {
                                 thumbnails: request.captureThumbnails !== false || !!(request.enableAiCaptions && request.geminiApiKey),
                                 audio: !!(request.enableAiTranscription && request.geminiApiKey && window.WAExporter.Gemini),
-                                maxSize: parseInt(request.thumbnailSize, 10) || 160
+                                maxSize: parseInt(request.thumbnailSize, 10) || 160,
+                                network: {
+                                    enabled: request.downloadMissingMedia === true,
+                                    maxAgeDays: request.mediaMaxAgeDays,
+                                    maxDownloads: request.maxMediaDownloads
+                                }
                             }, signal, onWajsProgress);
                         } finally {
                             await Engine.release();

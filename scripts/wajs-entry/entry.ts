@@ -18,6 +18,7 @@ import * as loader from './loader';
 import { msgFindByDirection } from './whatsapp/functions/msgFindByDirection';
 import { LruMediaStore } from './whatsapp/misc/LruMediaStore';
 import { MediaBlobCache } from './whatsapp/misc/MediaBlobCache';
+import { MsgModel } from './whatsapp/models/MsgModel';
 import { ChatStore, MsgStore } from './whatsapp/stores';
 
 declare const __VERSION__: string;
@@ -172,7 +173,34 @@ async function info(id: string): Promise<any> {
   };
 }
 
-export const media = { getCached, thumbnailFields, info };
+/**
+ * Network download, same call as WhatsApp's own "Download" button (WAWebMediaStage.react)
+ * and upstream downloadMedia(). Only reachable through the gated wajs_media_download action.
+ * Media older than maxAgeSeconds is never requested: once expired on the CDN (403),
+ * WhatsApp asks the sender's phone to re-upload it (stage REUPLOADING).
+ * Uses the live model when loaded, otherwise a detached MsgModel built from the database row.
+ */
+async function download(id: string, opts: { maxAgeSeconds: number }): Promise<any> {
+  const { live } = mediaSource(id);
+  const t = typeof live.t === 'number' ? live.t
+    : typeof live.senderTimestampMs === 'number' ? Math.floor(live.senderTimestampMs / 1000) : null;
+  if (!t || !(opts && opts.maxAgeSeconds > 0) || Date.now() / 1000 - t > opts.maxAgeSeconds) {
+    return { skipped: 'too_old' };
+  }
+  const model: any = typeof live.downloadMedia === 'function' ? live : new (MsgModel as any)(live);
+  const stageBefore = model.mediaData ? String(model.mediaData.mediaStage || '') || null : null;
+  let error: string | null = null;
+  try {
+    await model.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1, isUserInitiated: true });
+  } catch (e: any) {
+    error = (e && (e.code || e.name || e.message)) || 'download_failed';
+  }
+  const stageAfter = model.mediaData ? String(model.mediaData.mediaStage || '') || null : null;
+  const cached = await getCached(id);
+  return { stageBefore, stageAfter, error, cachedAfter: cached.source, size: cached.blob ? cached.blob.size : null, detached: model !== live };
+}
+
+export const media = { getCached, thumbnailFields, info, download };
 
 // Upstream conn/events/registerMainInit.ts is excluded, but the meta loader waits for
 // 'conn.main_init' before setting isReady. Same passive check as conn/functions/isMainInit.

@@ -18,8 +18,11 @@
     const READY_TIMEOUT_MS = 20000;
     const MAX_PAGE_SIZE = 50;
     const ALLOWED_ACTIONS = ['wajs_health', 'wajs_active_chat', 'wajs_get_messages', 'wajs_release',
-        'wajs_media_info', 'wajs_media_thumbnail', 'wajs_media_audio'];
+        'wajs_media_info', 'wajs_media_thumbnail', 'wajs_media_audio', 'wajs_media_download'];
     const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
+    // Network download policy (phase 3b): only recent media, never past WhatsApp's re-upload horizon.
+    const DEFAULT_MAX_AGE_DAYS = 14;
+    const MAX_AGE_DAYS_LIMIT = 30;
     // Base64 signatures of image payloads found in thumbnail fields.
     const IMAGE_PREFIXES = { '/9j/': 'image/jpeg', 'iVBOR': 'image/png', 'UklGR': 'image/webp' };
 
@@ -61,7 +64,8 @@
             'chat.reset': core.chat && core.chat.reset,
             'media.getCached': core.media && core.media.getCached,
             'media.thumbnailFields': core.media && core.media.thumbnailFields,
-            'media.info': core.media && core.media.info
+            'media.info': core.media && core.media.info,
+            'media.download': core.media && core.media.download
         };
         return Object.keys(required).filter(name => typeof required[name] !== 'function');
     }
@@ -255,6 +259,21 @@
         return { dataUri: await blobToDataUri(cached.blob), source: 'cache:' + cached.source, size: cached.blob.size };
     }
 
+    // Same call as WhatsApp's "Download" button, for media not in any local cache.
+    // want: 'thumbnail' (images/stickers) or 'audio' (voice notes).
+    async function mediaDownload(id, want, maxSize, maxAgeDays) {
+        const res = await core.media.download(id, { maxAgeSeconds: maxAgeDays * 86400 });
+        if (res.skipped) return { status: 'not_downloaded', reason: res.skipped };
+        if (!res.cachedAfter) {
+            // A 403 from the CDN leaves the media in REUPLOADING: WhatsApp asked the sender to re-upload.
+            const expired = res.stageAfter === 'REUPLOADING' || /MISSING|EXPIRED|GONE|403|404|410/i.test(String(res.error || res.stageAfter || ''));
+            return { status: expired ? 'expired' : 'error', reason: res.error || res.stageAfter || 'not_cached_after_download' };
+        }
+        const out = want === 'audio' ? await mediaAudio(id) : await mediaThumbnail(id, maxSize);
+        if (!out.dataUri) return { status: 'downloaded', reason: out.reason || 'not_decodable' };
+        return { status: want === 'audio' ? 'cached' : 'thumbnail', dataUri: out.dataUri, source: 'network' };
+    }
+
     function release() {
         core.chat.reset();
         try { delete window.__waExpCore; } catch (e) { }
@@ -287,6 +306,16 @@
                 }
                 if (params.id !== undefined && typeof params.id !== 'string') return reply(callbackId, { error: 'Invalid id' });
                 return reply(callbackId, { result: await getMessages(params) });
+            }
+
+            if (action === 'wajs_media_download') {
+                if (params?.allowNetwork !== true) return reply(callbackId, { error: 'Network download not allowed' });
+                if (typeof params.id !== 'string') return reply(callbackId, { error: 'Invalid id' });
+                if (params.want !== 'thumbnail' && params.want !== 'audio') return reply(callbackId, { error: 'Invalid want' });
+                const maxAgeDays = Number.isInteger(params.maxAgeDays) && params.maxAgeDays >= 1
+                    ? Math.min(params.maxAgeDays, MAX_AGE_DAYS_LIMIT) : DEFAULT_MAX_AGE_DAYS;
+                const maxSize = Number.isInteger(params.maxSize) && params.maxSize >= 32 && params.maxSize <= 512 ? params.maxSize : 160;
+                return reply(callbackId, { result: await mediaDownload(params.id, params.want, maxSize, maxAgeDays) });
             }
 
             if (action === 'wajs_media_info' || action === 'wajs_media_thumbnail' || action === 'wajs_media_audio') {

@@ -25,7 +25,14 @@ const ALLOWED = new Set([
     'core.media',
     'core.media.getCached',
     'core.media.thumbnailFields',
-    'core.media.info'
+    'core.media.info',
+    'core.media.download'
+]);
+
+// Network calls that are allowlisted despite matching DENY: each is the same call
+// WhatsApp's own UI makes for a user action, gated by an explicit request flag.
+const USER_EQUIVALENT = new Set([
+    'core.media.download' // WAWebMediaStage.react "Download" button (phase 3b)
 ]);
 
 const DENY = /\b(send\w*|mark\w*|star\w*|pin\w*|archive|unarchive|delete\w*|edit\w*|forward\w*|react\w*|subscribePresence|block\w*|clear|mute|unmute|download\w*|join\w*|leave|set\w*|queryExists|openChat\w*|keepMessage|requestPhoneNumber|rehydrateMessage)\b/;
@@ -41,7 +48,7 @@ for (const match of source.matchAll(/\bcore((?:\.[A-Za-z_$][\w$]*)*)(\s*\[)?/g))
     if (match[2]) errors.push(`dynamic access: ${path}[...]`);
     if (path === 'core') continue;
     if (!ALLOWED.has(path)) errors.push(`not allowlisted: ${path}`);
-    if (DENY.test(match[1])) errors.push(`forbidden name: ${path}`);
+    if (DENY.test(match[1]) && !USER_EQUIVALENT.has(path)) errors.push(`forbidden name: ${path}`);
 }
 
 // The bare identifier may only appear where it is captured, never passed around.
