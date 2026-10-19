@@ -1,0 +1,231 @@
+/* Shared by the popup and the options page: tokens, type and controls.
+   "Sober archive": paper and ink neutrals, one ledger-green accent, light and dark. */
+
+@font-face {
+    font-family: 'Atkinson Hyperlegible Next';
+    src: url('../fonts/AtkinsonHyperlegibleNext-latin.woff2') format('woff2');
+    font-weight: 200 800;
+    font-style: normal;
+    font-display: swap;
+}
+
+:root {
+    color-scheme: light dark;
+
+    --paper: #f2f3ef;
+    --surface: #fbfbf9;
+    --ink: #1d2320;
+    --ink-muted: #56615c;
+    --rule: #d3d9d4;
+    --rule-strong: #848e89;
+    --ledger: #2e6a4e;
+    --ledger-strong: #24563f;
+    --ledger-ink: #ffffff;
+    --ledger-tint: #e1ece5;
+    --caution: #7a5200;
+    --danger: #9b2c22;
+
+    --font: 'Atkinson Hyperlegible Next', system-ui, sans-serif;
+    --text-xs: 12px;
+    --text-sm: 13px;
+    --text-md: 15px;
+    --text-lg: 22px;
+
+    --radius-control: 6px;
+    --radius-button: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --paper: #161a18;
+        --surface: #1e2321;
+        --ink: #e4e8e5;
+        --ink-muted: #9ba6a1;
+        --rule: #2d3532;
+        --rule-strong: #6b7772;
+        --ledger: #86c3a0;
+        --ledger-strong: #a3d5b8;
+        --ledger-ink: #0f1a14;
+        --ledger-tint: #203029;
+        --caution: #e2b65c;
+        --danger: #f08a7e;
+    }
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html {
+    background: var(--paper);
+}
+
+body {
+    margin: 0;
+    font-family: var(--font);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    color: var(--ink);
+    background: var(--paper);
+    -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+p,
+fieldset,
+legend {
+    margin: 0;
+    padding: 0;
+}
+
+fieldset {
+    border: 0;
+    min-width: 0;
+}
+
+button,
+input,
+select,
+textarea {
+    font: inherit;
+    color: inherit;
+}
+
+:focus-visible {
+    outline: 2px solid var(--ledger);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+[hidden] {
+    display: none !important;
+}
+
+.tabular {
+    font-variant-numeric: tabular-nums;
+}
+
+.muted {
+    color: var(--ink-muted);
+}
+
+/* Fields */
+
+.field {
+    background: var(--surface);
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius-control);
+    padding: 5px 8px;
+    min-height: 32px;
+    min-width: 0;
+    font-variant-numeric: tabular-nums;
+    transition: border-color 0.15s ease;
+}
+
+.field:hover {
+    border-color: var(--ink-muted);
+}
+
+.field:focus-visible {
+    border-color: var(--ledger);
+    outline-offset: 0;
+}
+
+.field[aria-invalid="true"] {
+    border-color: var(--danger);
+}
+
+select.field {
+    background-color: var(--surface);
+    color: var(--ink);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+    accent-color: var(--ledger);
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    flex: none;
+}
+
+/* Buttons */
+
+.button-primary {
+    background: var(--ledger);
+    color: var(--ledger-ink);
+    border: 0;
+    border-radius: var(--radius-button);
+    padding: 8px 16px;
+    min-height: 36px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.button-primary:hover {
+    background: var(--ledger-strong);
+}
+
+.button-secondary {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius-button);
+    padding: 7px 14px;
+    min-height: 36px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.button-secondary:hover {
+    border-color: var(--ink-muted);
+    background: var(--surface);
+}
+
+.button-text {
+    background: none;
+    border: 0;
+    padding: 4px 2px;
+    color: var(--ledger);
+    font-weight: 700;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+    text-underline-offset: 3px;
+    transition: text-decoration-color 0.15s ease;
+}
+
+.button-text:hover {
+    text-decoration-color: currentColor;
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* "Uses network" marker: the same everywhere an option leaves the browser. */
+.tag-network {
+    flex: none;
+    font-size: var(--text-xs);
+    line-height: 1.5;
+    color: var(--caution);
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    padding: 0 7px;
+    white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        transition: none !important;
+        animation: none !important;
+    }
+}

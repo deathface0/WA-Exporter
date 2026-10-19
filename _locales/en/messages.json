@@ -1,0 +1,317 @@
+{
+  "extName": {
+    "message": "WA Web Chat Exporter"
+  },
+  "extDescription": {
+    "message": "Export WhatsApp Web chats to TXT, JSON or CSV, entirely in your browser."
+  },
+  "openOptions": {
+    "message": "Settings"
+  },
+  "noChatTitle": {
+    "message": "No chat open"
+  },
+  "metaDetecting": {
+    "message": "Looking for the open chat…"
+  },
+  "metaReady": {
+    "message": "Ready to export"
+  },
+  "metaGroup": {
+    "message": "Group chat, ready to export"
+  },
+  "errNoWhatsApp": {
+    "message": "Open WhatsApp Web in this window to export a chat."
+  },
+  "errNoChat": {
+    "message": "Open a chat in WhatsApp Web, then open this again."
+  },
+  "errConnect": {
+    "message": "Can't reach WhatsApp Web. Reload its tab and try again."
+  },
+  "whatToExport": {
+    "message": "What to export"
+  },
+  "scopeLast": {
+    "message": "Last"
+  },
+  "scopeMessages": {
+    "message": "messages"
+  },
+  "scopeCountLabel": {
+    "message": "Number of messages"
+  },
+  "scopeRange": {
+    "message": "Between two dates"
+  },
+  "scopeFrom": {
+    "message": "From"
+  },
+  "scopeTo": {
+    "message": "To"
+  },
+  "scopeAll": {
+    "message": "Whole chat"
+  },
+  "format": {
+    "message": "Format"
+  },
+  "include": {
+    "message": "Include"
+  },
+  "incThumbnails": {
+    "message": "Photo and video thumbnails"
+  },
+  "incAi": {
+    "message": "Image descriptions and voice transcripts"
+  },
+  "incAiNote": {
+    "message": "Images and voice notes go to Google Gemini with your key."
+  },
+  "incAiMissing": {
+    "message": "Needs a Gemini key."
+  },
+  "aiSetup": {
+    "message": "Add key"
+  },
+  "incOlder": {
+    "message": "Older messages from your phone"
+  },
+  "incOlderNote": {
+    "message": "If this browser runs out of messages, the chat is scrolled and WhatsApp's “older messages” notice is tapped once."
+  },
+  "incMedia": {
+    "message": "Recent photos and voice notes"
+  },
+  "incMediaNote": {
+    "message": "Downloads up to $1 items from the last $2 days, like tapping Download."
+  },
+  "usesNetwork": {
+    "message": "Uses network"
+  },
+  "downloadAs": {
+    "message": "Download $1"
+  },
+  "copyText": {
+    "message": "Copy text"
+  },
+  "trustLocal": {
+    "message": "Runs in this browser. Nothing is uploaded."
+  },
+  "trustNetwork": {
+    "message": "Runs in this browser. Options marked “Uses network” connect to the internet."
+  },
+  "cancel": {
+    "message": "Cancel"
+  },
+  "cancelling": {
+    "message": "Cancelling. Messages read so far are kept."
+  },
+  "counter_one": {
+    "message": "message"
+  },
+  "counter_other": {
+    "message": "messages"
+  },
+  "phStarting": {
+    "message": "Starting…"
+  },
+  "phLoading": {
+    "message": "Preparing to read the chat…"
+  },
+  "phReading": {
+    "message": "Reading messages…"
+  },
+  "phMediaCache": {
+    "message": "Reading photos saved in this browser ($1 of $2)…"
+  },
+  "phMediaDownload": {
+    "message": "Downloading recent media ($1 of $2)…"
+  },
+  "phOlder": {
+    "message": "Loading older messages from your phone…"
+  },
+  "phFallback": {
+    "message": "Switching to the classic reader…"
+  },
+  "phScrolling": {
+    "message": "Scrolling through the chat…"
+  },
+  "phPhone": {
+    "message": "Waiting for your phone…"
+  },
+  "phThumbnails": {
+    "message": "Making thumbnails…"
+  },
+  "phAiImages": {
+    "message": "Describing images ($1 of $2)…"
+  },
+  "phAiAudio": {
+    "message": "Transcribing voice notes ($1 of $2)…"
+  },
+  "doneDownloaded_one": {
+    "message": "Downloaded $1 message."
+  },
+  "doneDownloaded_other": {
+    "message": "Downloaded $1 messages."
+  },
+  "doneCopied_one": {
+    "message": "Copied $1 message."
+  },
+  "doneCopied_other": {
+    "message": "Copied $1 messages."
+  },
+  "doneReady_one": {
+    "message": "$1 message ready. Download it or copy it."
+  },
+  "doneReady_other": {
+    "message": "$1 messages ready. Download them or copy them."
+  },
+  "partialCancelled": {
+    "message": "Cancelled, so only the messages read before that were exported."
+  },
+  "partialOlder": {
+    "message": "Partial: this browser only has messages back to $1. Turn on “Older messages from your phone” to go further."
+  },
+  "partialGeneric": {
+    "message": "Partial: WhatsApp didn't load the whole range. Scroll up in the chat and try again."
+  },
+  "usedClassic": {
+    "message": "Used the classic reader, because the fast one doesn't work with this WhatsApp version."
+  },
+  "noMessages": {
+    "message": "No messages in that range. Pick other dates or a larger number."
+  },
+  "errExtraction": {
+    "message": "Export failed: $1. Reload WhatsApp Web and try again."
+  },
+  "errDatesMissing": {
+    "message": "Choose both dates."
+  },
+  "errDatesOrder": {
+    "message": "The start date must be before the end date."
+  },
+  "errCount": {
+    "message": "Enter how many messages to export."
+  },
+  "optTitle": {
+    "message": "Settings"
+  },
+  "optReader": {
+    "message": "Reader"
+  },
+  "optReaderFast": {
+    "message": "Fast (recommended)"
+  },
+  "optReaderFastHint": {
+    "message": "Reads the chat from WhatsApp Web's own data, without scrolling. Falls back to the classic reader when it can't run."
+  },
+  "optReaderClassic": {
+    "message": "Classic"
+  },
+  "optReaderClassicHint": {
+    "message": "Scrolls through the chat on screen. Slower, and it leaves out reactions and poll votes."
+  },
+  "optThumbs": {
+    "message": "Thumbnails"
+  },
+  "optThumbSize": {
+    "message": "Size"
+  },
+  "optThumb120": {
+    "message": "Small, 120 px"
+  },
+  "optThumb160": {
+    "message": "Medium, 160 px"
+  },
+  "optThumb256": {
+    "message": "Large, 256 px"
+  },
+  "optMedia": {
+    "message": "Recent media download"
+  },
+  "optMediaAge": {
+    "message": "Only from the last"
+  },
+  "optDays": {
+    "message": "days"
+  },
+  "optMediaMax": {
+    "message": "At most"
+  },
+  "optItems": {
+    "message": "items per export"
+  },
+  "optMediaHint": {
+    "message": "Older media has usually expired, and asking for it makes WhatsApp request it again from the sender's phone. That's why the limit is 30 days."
+  },
+  "optGemini": {
+    "message": "Gemini (optional)"
+  },
+  "optGeminiIntro": {
+    "message": "Describes images and transcribes voice notes with your own Google AI Studio key. Only used for exports where you turn it on."
+  },
+  "optKey": {
+    "message": "API key"
+  },
+  "optKeyCheck": {
+    "message": "Check key"
+  },
+  "optKeyChecking": {
+    "message": "Checking with Google AI Studio…"
+  },
+  "optKeyEmpty": {
+    "message": "Paste a key first."
+  },
+  "optKeyOk": {
+    "message": "The key works. $1 models available."
+  },
+  "optKeyBad": {
+    "message": "Google rejected the key (status $1). Copy it again from Google AI Studio."
+  },
+  "optKeyError": {
+    "message": "Couldn't reach Google AI Studio: $1."
+  },
+  "optModel": {
+    "message": "Model"
+  },
+  "optModelAuto": {
+    "message": "Automatic (recommended)"
+  },
+  "optBudget": {
+    "message": "API calls per export"
+  },
+  "optBudgetHint": {
+    "message": "About $1 images, 4 per call."
+  },
+  "optDescribe": {
+    "message": "Describe images"
+  },
+  "optTranscribe": {
+    "message": "Transcribe voice notes up to 5 minutes"
+  },
+  "optPrompt": {
+    "message": "Instructions for image descriptions"
+  },
+  "optPromptHint": {
+    "message": "Leave empty to use the default, in your language."
+  },
+  "optPromptPlaceholder": {
+    "message": "Describe the main objects and people in one short sentence…"
+  },
+  "optPromptReset": {
+    "message": "Use default"
+  },
+  "optPrivacy": {
+    "message": "Privacy"
+  },
+  "optPrivacyText": {
+    "message": "Exports are built in this browser and saved where you choose. Nothing is uploaded, except what you turn on yourself: images and voice notes sent to Gemini, and recent media requested from WhatsApp."
+  },
+  "optSaved": {
+    "message": "Saved"
+  },
+  "optVersion": {
+    "message": "Version $1"
+  }
+}

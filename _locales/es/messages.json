@@ -1,0 +1,317 @@
+{
+  "extName": {
+    "message": "WA Web Chat Exporter"
+  },
+  "extDescription": {
+    "message": "Exporta chats de WhatsApp Web a TXT, JSON o CSV, todo dentro de tu navegador."
+  },
+  "openOptions": {
+    "message": "Ajustes"
+  },
+  "noChatTitle": {
+    "message": "Ningún chat abierto"
+  },
+  "metaDetecting": {
+    "message": "Buscando el chat abierto…"
+  },
+  "metaReady": {
+    "message": "Listo para exportar"
+  },
+  "metaGroup": {
+    "message": "Chat de grupo, listo para exportar"
+  },
+  "errNoWhatsApp": {
+    "message": "Abre WhatsApp Web en esta ventana para exportar un chat."
+  },
+  "errNoChat": {
+    "message": "Abre un chat en WhatsApp Web y vuelve a abrir esto."
+  },
+  "errConnect": {
+    "message": "No se puede conectar con WhatsApp Web. Recarga su pestaña e inténtalo de nuevo."
+  },
+  "whatToExport": {
+    "message": "Qué exportar"
+  },
+  "scopeLast": {
+    "message": "Últimos"
+  },
+  "scopeMessages": {
+    "message": "mensajes"
+  },
+  "scopeCountLabel": {
+    "message": "Número de mensajes"
+  },
+  "scopeRange": {
+    "message": "Entre dos fechas"
+  },
+  "scopeFrom": {
+    "message": "Desde"
+  },
+  "scopeTo": {
+    "message": "Hasta"
+  },
+  "scopeAll": {
+    "message": "Todo el chat"
+  },
+  "format": {
+    "message": "Formato"
+  },
+  "include": {
+    "message": "Incluir"
+  },
+  "incThumbnails": {
+    "message": "Miniaturas de fotos y vídeos"
+  },
+  "incAi": {
+    "message": "Descripciones de imágenes y transcripciones de audios"
+  },
+  "incAiNote": {
+    "message": "Las imágenes y los audios se envían a Google Gemini con tu clave."
+  },
+  "incAiMissing": {
+    "message": "Necesita una clave de Gemini."
+  },
+  "aiSetup": {
+    "message": "Añadir clave"
+  },
+  "incOlder": {
+    "message": "Mensajes antiguos del teléfono"
+  },
+  "incOlderNote": {
+    "message": "Si este navegador se queda sin mensajes, se recorre el chat y se pulsa una vez el aviso de mensajes antiguos de WhatsApp."
+  },
+  "incMedia": {
+    "message": "Fotos y audios recientes"
+  },
+  "incMediaNote": {
+    "message": "Descarga hasta $1 elementos de los últimos $2 días, como al pulsar Descargar."
+  },
+  "usesNetwork": {
+    "message": "Usa la red"
+  },
+  "downloadAs": {
+    "message": "Descargar $1"
+  },
+  "copyText": {
+    "message": "Copiar texto"
+  },
+  "trustLocal": {
+    "message": "Se ejecuta en este navegador. No se sube nada."
+  },
+  "trustNetwork": {
+    "message": "Se ejecuta en este navegador. Las opciones marcadas con «Usa la red» se conectan a internet."
+  },
+  "cancel": {
+    "message": "Cancelar"
+  },
+  "cancelling": {
+    "message": "Cancelando. Se conservan los mensajes leídos hasta ahora."
+  },
+  "counter_one": {
+    "message": "mensaje"
+  },
+  "counter_other": {
+    "message": "mensajes"
+  },
+  "phStarting": {
+    "message": "Empezando…"
+  },
+  "phLoading": {
+    "message": "Preparando la lectura del chat…"
+  },
+  "phReading": {
+    "message": "Leyendo mensajes…"
+  },
+  "phMediaCache": {
+    "message": "Leyendo fotos guardadas en el navegador ($1 de $2)…"
+  },
+  "phMediaDownload": {
+    "message": "Descargando media reciente ($1 de $2)…"
+  },
+  "phOlder": {
+    "message": "Cargando mensajes antiguos del teléfono…"
+  },
+  "phFallback": {
+    "message": "Cambiando al lector clásico…"
+  },
+  "phScrolling": {
+    "message": "Recorriendo el chat…"
+  },
+  "phPhone": {
+    "message": "Esperando al teléfono…"
+  },
+  "phThumbnails": {
+    "message": "Generando miniaturas…"
+  },
+  "phAiImages": {
+    "message": "Describiendo imágenes ($1 de $2)…"
+  },
+  "phAiAudio": {
+    "message": "Transcribiendo audios ($1 de $2)…"
+  },
+  "doneDownloaded_one": {
+    "message": "Descargado $1 mensaje."
+  },
+  "doneDownloaded_other": {
+    "message": "Descargados $1 mensajes."
+  },
+  "doneCopied_one": {
+    "message": "Copiado $1 mensaje."
+  },
+  "doneCopied_other": {
+    "message": "Copiados $1 mensajes."
+  },
+  "doneReady_one": {
+    "message": "$1 mensaje listo. Descárgalo o cópialo."
+  },
+  "doneReady_other": {
+    "message": "$1 mensajes listos. Descárgalos o cópialos."
+  },
+  "partialCancelled": {
+    "message": "Cancelado: solo se exportaron los mensajes leídos antes."
+  },
+  "partialOlder": {
+    "message": "Parcial: este navegador solo tiene mensajes hasta el $1. Activa «Mensajes antiguos del teléfono» para llegar más atrás."
+  },
+  "partialGeneric": {
+    "message": "Parcial: WhatsApp no cargó todo el rango. Sube en el chat e inténtalo de nuevo."
+  },
+  "usedClassic": {
+    "message": "Se usó el lector clásico, porque el rápido no funciona con esta versión de WhatsApp."
+  },
+  "noMessages": {
+    "message": "No hay mensajes en ese rango. Elige otras fechas o un número mayor."
+  },
+  "errExtraction": {
+    "message": "Falló la exportación: $1. Recarga WhatsApp Web e inténtalo de nuevo."
+  },
+  "errDatesMissing": {
+    "message": "Elige las dos fechas."
+  },
+  "errDatesOrder": {
+    "message": "La fecha de inicio debe ser anterior a la de fin."
+  },
+  "errCount": {
+    "message": "Indica cuántos mensajes exportar."
+  },
+  "optTitle": {
+    "message": "Ajustes"
+  },
+  "optReader": {
+    "message": "Lector"
+  },
+  "optReaderFast": {
+    "message": "Rápido (recomendado)"
+  },
+  "optReaderFastHint": {
+    "message": "Lee el chat de los propios datos de WhatsApp Web, sin desplazarse. Si no puede, usa el lector clásico."
+  },
+  "optReaderClassic": {
+    "message": "Clásico"
+  },
+  "optReaderClassicHint": {
+    "message": "Recorre el chat en pantalla. Es más lento y no incluye reacciones ni votos de encuestas."
+  },
+  "optThumbs": {
+    "message": "Miniaturas"
+  },
+  "optThumbSize": {
+    "message": "Tamaño"
+  },
+  "optThumb120": {
+    "message": "Pequeñas, 120 px"
+  },
+  "optThumb160": {
+    "message": "Medianas, 160 px"
+  },
+  "optThumb256": {
+    "message": "Grandes, 256 px"
+  },
+  "optMedia": {
+    "message": "Descarga de media reciente"
+  },
+  "optMediaAge": {
+    "message": "Solo de los últimos"
+  },
+  "optDays": {
+    "message": "días"
+  },
+  "optMediaMax": {
+    "message": "Como máximo"
+  },
+  "optItems": {
+    "message": "elementos por exportación"
+  },
+  "optMediaHint": {
+    "message": "La media antigua suele haber caducado, y pedirla hace que WhatsApp se la vuelva a pedir al teléfono de quien la envió. Por eso el límite es de 30 días."
+  },
+  "optGemini": {
+    "message": "Gemini (opcional)"
+  },
+  "optGeminiIntro": {
+    "message": "Describe imágenes y transcribe audios con tu propia clave de Google AI Studio. Solo se usa en las exportaciones en que lo actives."
+  },
+  "optKey": {
+    "message": "Clave de API"
+  },
+  "optKeyCheck": {
+    "message": "Comprobar clave"
+  },
+  "optKeyChecking": {
+    "message": "Comprobando con Google AI Studio…"
+  },
+  "optKeyEmpty": {
+    "message": "Pega primero una clave."
+  },
+  "optKeyOk": {
+    "message": "La clave funciona. Hay $1 modelos disponibles."
+  },
+  "optKeyBad": {
+    "message": "Google rechazó la clave (estado $1). Cópiala de nuevo desde Google AI Studio."
+  },
+  "optKeyError": {
+    "message": "No se pudo conectar con Google AI Studio: $1."
+  },
+  "optModel": {
+    "message": "Modelo"
+  },
+  "optModelAuto": {
+    "message": "Automático (recomendado)"
+  },
+  "optBudget": {
+    "message": "Llamadas a la API por exportación"
+  },
+  "optBudgetHint": {
+    "message": "Unas $1 imágenes, 4 por llamada."
+  },
+  "optDescribe": {
+    "message": "Describir imágenes"
+  },
+  "optTranscribe": {
+    "message": "Transcribir audios de hasta 5 minutos"
+  },
+  "optPrompt": {
+    "message": "Instrucciones para describir imágenes"
+  },
+  "optPromptHint": {
+    "message": "Déjalo vacío para usar las predeterminadas, en tu idioma."
+  },
+  "optPromptPlaceholder": {
+    "message": "Describe en una frase los objetos y las personas principales…"
+  },
+  "optPromptReset": {
+    "message": "Usar las predeterminadas"
+  },
+  "optPrivacy": {
+    "message": "Privacidad"
+  },
+  "optPrivacyText": {
+    "message": "Las exportaciones se generan en este navegador y se guardan donde elijas. No se sube nada, salvo lo que actives tú: imágenes y audios enviados a Gemini, y media reciente pedida a WhatsApp."
+  },
+  "optSaved": {
+    "message": "Guardado"
+  },
+  "optVersion": {
+    "message": "Versión $1"
+  }
+}

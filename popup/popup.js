@@ -1,930 +1,327 @@
 (function () {
     'use strict';
 
+    // Popup view and wiring. Settings and the request contract: settings.js; talking to the
+    // WhatsApp tab: session.js; texts: _locales via i18n.js.
+
     if (typeof browser === 'undefined') {
         window.browser = chrome;
     }
 
-    /* ── Helpers ── */
-
+    const { Settings, Session, I18n, Formatters } = window.WAExporter;
+    const { t, plural } = I18n;
     const $ = (id) => document.getElementById(id);
-    const pad = (n) => n.toString().padStart(2, '0');
-    const Formatters = window.WAExporter.Formatters;
 
-    // 'wajs' (v3.0 betas) is stored for some users; it always meant WA-JS with DOM fallback.
-    function normalizeEngine(value) {
-        return value === 'dom' ? 'dom' : 'auto';
+    const MESSAGE_PHASES = new Set(['starting', 'wajs_loading', 'wajs_paging', 'wajs_sync_older', 'engine_fallback', 'scrolling', 'syncing_phone']);
+
+    const ui = {
+        settings: null,
+        tabId: null,
+        chatTitle: null,
+        busy: false,
+        ownRequest: false,
+        cache: null,           // { key, request, result }
+        messagesRead: 0,
+        targetCount: null
+    };
+
+    /* ── Rendering ── */
+
+    function render() {
+        const s = ui.settings;
+        document.querySelectorAll('input[name="extractMode"]').forEach(r => { r.checked = r.value === s.extractMode; });
+        document.querySelectorAll('input[name="exportFormat"]').forEach(r => { r.checked = r.value === s.exportFormat; });
+        $('messageCount').value = s.messageCount;
+        $('startTime').value = s.startTime;
+        $('endTime').value = s.endTime;
+        $('captureThumbnails').checked = s.captureThumbnails;
+        $('syncOlderFromPhone').checked = s.syncOlderFromPhone;
+        $('downloadMissingMedia').checked = s.downloadMissingMedia;
+        renderDependent();
     }
 
-    function describeSource(result) {
-        if (!result) return '';
-        if (result.engine === 'wajs') return result.source === 'wajs+dom' ? 'via WA-JS + phone sync' : 'via WA-JS';
-        const base = result.source === 'database' ? 'via database' : 'via DOM scroll';
-        return result.fallbackReason ? `${base} (WA-JS fallback: ${result.fallbackReason})` : base;
+    // Everything that depends on other values: visibility, notes, labels.
+    function renderDependent() {
+        const s = ui.settings;
+        $('dateFields').hidden = s.extractMode !== 'date';
+
+        const aiReady = Settings.hasAi(s);
+        const ai = $('enableAiCaptions');
+        ai.disabled = !aiReady;
+        ai.checked = aiReady && s.enableAiCaptions;
+        $('aiMissing').hidden = aiReady;
+        $('aiNote').hidden = !ai.checked;
+
+        const fast = s.extractEngine !== 'dom';
+        document.querySelectorAll('.wajs-only').forEach(el => { el.hidden = !fast; });
+        $('olderNote').hidden = !s.syncOlderFromPhone;
+        $('mediaNote').hidden = !s.downloadMissingMedia;
+        $('mediaNote').textContent = t('incMediaNote', [I18n.num(s.maxMediaDownloads), I18n.num(s.mediaMaxAgeDays)]);
+
+        const usesNetwork = ai.checked || (fast && (s.syncOlderFromPhone || s.downloadMissingMedia));
+        $('trust').textContent = t(usesNetwork ? 'trustNetwork' : 'trustLocal');
+        $('downloadBtn').textContent = t('downloadAs', s.exportFormat.toUpperCase());
     }
 
-    function formatLocalDatetime(date) {
-        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    function setChat(title, metaKey) {
+        $('chatName').textContent = title || t('noChatTitle');
+        $('chatMeta').textContent = t(metaKey);
     }
 
-    let activeChatTitle = 'Chat';
-    let isExtracting = false;
-    let cachedResult = null;
-    let cachedParams = null;
-
-    /* ── Init & State Persistence ── */
-
-    document.addEventListener('DOMContentLoaded', async () => {
-        const now = new Date();
-        const yesterday = new Date(now.getTime() - 86400000);
-
-        // Restore persisted inputs
-        let storage = {};
-        try {
-            storage = await browser.storage.local.get([
-                'startTime', 'endTime', 'extractMode', 'exportFormat', 'messageCount',
-                'captureThumbnails', 'thumbnailResolution', 'enableAiCaptions', 'enableAiTranscription', 'geminiApiKey', 'maxAiRequests', 'advancedExpanded',
-                'aiModelPreference', 'customAiPrompt', 'promptExpanded', 'extractEngine',
-                'downloadMissingMedia', 'mediaMaxAgeDays', 'maxMediaDownloads', 'syncOlderFromPhone'
-            ]);
-        } catch (e) { }
-
-        $('startTime').value = storage.startTime || formatLocalDatetime(yesterday);
-        $('endTime').value = storage.endTime || formatLocalDatetime(now);
-        if (storage.messageCount) $('messageCount').value = storage.messageCount;
-
-        if (storage.extractMode) {
-            const r = document.querySelector(`input[name="extractMode"][value="${storage.extractMode}"]`);
-            if (r) r.checked = true;
+    function setStatus(text, detail = '', isError = false) {
+        const el = $('status');
+        el.textContent = '';
+        el.classList.toggle('error', isError);
+        if (!text) return;
+        el.append(text);
+        if (detail) {
+            const d = document.createElement('span');
+            d.className = 'status-detail';
+            d.textContent = detail;
+            el.append(d);
         }
-
-        if (storage.exportFormat) {
-            const r = document.querySelector(`input[name="exportFormat"][value="${storage.exportFormat}"]`);
-            if (r) r.checked = true;
-        }
-
-        // Restore Advanced & AI settings
-        if (storage.captureThumbnails !== undefined) {
-            $('toggleThumbnails').checked = !!storage.captureThumbnails;
-        }
-        if (storage.thumbnailResolution) {
-            $('thumbnailResolution').value = storage.thumbnailResolution;
-        }
-        if (storage.enableAiCaptions !== undefined) {
-            $('toggleAiCaptions').checked = !!storage.enableAiCaptions;
-        }
-        if (storage.enableAiTranscription !== undefined && $('toggleAiTranscription')) {
-            $('toggleAiTranscription').checked = !!storage.enableAiTranscription;
-        }
-        if (storage.geminiApiKey) {
-            $('geminiApiKey').value = storage.geminiApiKey;
-        }
-        if (storage.maxAiRequests) {
-            $('maxAiRequests').value = storage.maxAiRequests;
-        }
-        if (storage.aiModelPreference && $('aiModelSelect')) {
-            $('aiModelSelect').value = storage.aiModelPreference;
-        }
-        if (storage.customAiPrompt && $('customAiPrompt')) {
-            $('customAiPrompt').value = storage.customAiPrompt;
-        }
-        if (storage.advancedExpanded) {
-            $('advancedContent').style.display = 'flex';
-            $('advancedToggleArrow').textContent = '▾';
-        }
-        if ($('engineSelect')) {
-            $('engineSelect').value = normalizeEngine(storage.extractEngine);
-        }
-        if (storage.downloadMissingMedia !== undefined) {
-            $('toggleDownloadMedia').checked = !!storage.downloadMissingMedia;
-        }
-        if (storage.syncOlderFromPhone !== undefined) {
-            $('toggleSyncOlder').checked = !!storage.syncOlderFromPhone;
-        }
-        $('syncOlderNote').style.display = $('toggleSyncOlder').checked ? 'block' : 'none';
-        if (storage.mediaMaxAgeDays) {
-            $('mediaMaxAgeDays').value = storage.mediaMaxAgeDays;
-        }
-        if (storage.maxMediaDownloads) {
-            $('maxMediaDownloads').value = storage.maxMediaDownloads;
-        }
-        if (storage.promptExpanded && $('promptContent')) {
-            $('promptContent').style.display = 'flex';
-            $('promptToggleArrow').textContent = '▾';
-        }
-
-        function updateCapacityBadge() {
-            const calls = parseInt($('maxAiRequests').value, 10) || 50;
-            const items = calls * 4;
-            if ($('aiCapacityBadge')) {
-                $('aiCapacityBadge').textContent = `≈ ${items} items`;
-            }
-        }
-
-        updateCapacityBadge();
-        toggleInputs();
-        toggleAdvancedSections();
-
-        // Persist on change & invalidate cache
-        document.querySelectorAll('input[name="extractMode"]').forEach(r => {
-            r.addEventListener('change', (e) => {
-                browser.storage.local.set({ extractMode: e.target.value });
-                toggleInputs();
-                invalidateCache();
-            });
-        });
-
-        document.querySelectorAll('input[name="exportFormat"]').forEach(r => {
-            r.addEventListener('change', (e) => {
-                browser.storage.local.set({ exportFormat: e.target.value });
-            });
-        });
-
-        $('startTime').addEventListener('change', (e) => {
-            browser.storage.local.set({ startTime: e.target.value });
-            invalidateCache();
-        });
-
-        $('endTime').addEventListener('change', (e) => {
-            browser.storage.local.set({ endTime: e.target.value });
-            invalidateCache();
-        });
-
-        $('messageCount').addEventListener('change', (e) => {
-            browser.storage.local.set({ messageCount: e.target.value });
-            invalidateCache();
-        });
-
-        // Advanced & AI handlers
-        $('advancedToggleBtn').addEventListener('click', () => {
-            const content = $('advancedContent');
-            const arrow = $('advancedToggleArrow');
-            const isHidden = content.style.display === 'none';
-            content.style.display = isHidden ? 'flex' : 'none';
-            arrow.textContent = isHidden ? '▾' : '▸';
-            browser.storage.local.set({ advancedExpanded: isHidden });
-        });
-
-        if ($('promptToggleBtn')) {
-            $('promptToggleBtn').addEventListener('click', () => {
-                const content = $('promptContent');
-                const arrow = $('promptToggleArrow');
-                const isHidden = content.style.display === 'none';
-                content.style.display = isHidden ? 'flex' : 'none';
-                arrow.textContent = isHidden ? '▾' : '▸';
-                browser.storage.local.set({ promptExpanded: isHidden });
-            });
-        }
-
-        if ($('resetPromptBtn')) {
-            $('resetPromptBtn').addEventListener('click', () => {
-                $('customAiPrompt').value = '';
-                browser.storage.local.set({ customAiPrompt: '' });
-                invalidateCache();
-            });
-        }
-
-        if ($('customAiPrompt')) {
-            $('customAiPrompt').addEventListener('input', (e) => {
-                browser.storage.local.set({ customAiPrompt: e.target.value });
-                invalidateCache();
-            });
-        }
-
-        if ($('engineSelect')) {
-            $('engineSelect').addEventListener('change', (e) => {
-                browser.storage.local.set({ extractEngine: e.target.value });
-                toggleAdvancedSections();
-                invalidateCache();
-            });
-        }
-
-        $('toggleSyncOlder').addEventListener('change', (e) => {
-            browser.storage.local.set({ syncOlderFromPhone: e.target.checked });
-            $('syncOlderNote').style.display = e.target.checked ? 'block' : 'none';
-            invalidateCache();
-        });
-
-        $('toggleDownloadMedia').addEventListener('change', (e) => {
-            browser.storage.local.set({ downloadMissingMedia: e.target.checked });
-            toggleAdvancedSections();
-            invalidateCache();
-        });
-
-        $('mediaMaxAgeDays').addEventListener('change', (e) => {
-            browser.storage.local.set({ mediaMaxAgeDays: e.target.value });
-            invalidateCache();
-        });
-
-        $('maxMediaDownloads').addEventListener('change', (e) => {
-            browser.storage.local.set({ maxMediaDownloads: e.target.value });
-            invalidateCache();
-        });
-
-        if ($('aiModelSelect')) {
-            $('aiModelSelect').addEventListener('change', (e) => {
-                browser.storage.local.set({ aiModelPreference: e.target.value });
-                invalidateCache();
-            });
-        }
-
-        $('toggleThumbnails').addEventListener('change', (e) => {
-            browser.storage.local.set({ captureThumbnails: e.target.checked });
-            toggleAdvancedSections();
-            invalidateCache();
-        });
-
-        $('thumbnailResolution').addEventListener('change', (e) => {
-            browser.storage.local.set({ thumbnailResolution: e.target.value });
-            invalidateCache();
-        });
-
-        if ($('toggleAiCaptions')) {
-            $('toggleAiCaptions').addEventListener('change', (e) => {
-                browser.storage.local.set({ enableAiCaptions: e.target.checked });
-                toggleAdvancedSections();
-                invalidateCache();
-            });
-        }
-
-        if ($('toggleAiTranscription')) {
-            $('toggleAiTranscription').addEventListener('change', (e) => {
-                browser.storage.local.set({ enableAiTranscription: e.target.checked });
-                invalidateCache();
-            });
-        }
-
-        $('geminiApiKey').addEventListener('input', (e) => {
-            browser.storage.local.set({ geminiApiKey: e.target.value.trim() });
-            $('apiKeyValidationStatus').style.display = 'none';
-            invalidateCache();
-        });
-
-        $('maxAiRequests').addEventListener('input', () => {
-            updateCapacityBadge();
-        });
-
-        $('maxAiRequests').addEventListener('change', (e) => {
-            updateCapacityBadge();
-            browser.storage.local.set({ maxAiRequests: e.target.value });
-        });
-
-        $('validateKeyBtn').addEventListener('click', async () => {
-            const key = $('geminiApiKey').value.trim();
-            const statusEl = $('apiKeyValidationStatus');
-            if (!key) {
-                statusEl.className = 'validation-status error';
-                statusEl.textContent = '❌ Please enter an API key.';
-                statusEl.style.display = 'block';
-                return;
-            }
-            statusEl.className = 'validation-status';
-            statusEl.textContent = '⏳ Checking key with Google AI Studio...';
-            statusEl.style.display = 'block';
-
-            try {
-                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
-                if (res.status === 200) {
-                    const data = await res.json();
-                    const models = (data && data.models) ? data.models.length : 0;
-                    statusEl.className = 'validation-status success';
-                    statusEl.textContent = `✅ Valid! Connected to Google AI (${models} models available).`;
-                } else {
-                    statusEl.className = 'validation-status error';
-                    statusEl.textContent = `❌ Invalid key (Status ${res.status}).`;
-                }
-            } catch (err) {
-                statusEl.className = 'validation-status error';
-                statusEl.textContent = `❌ Error checking key: ${err.message}`;
-            }
-        });
-
-        // Listen for background extraction events
-        browser.runtime.onMessage.addListener((message) => {
-            if (!message) return;
-
-            if (message.type === 'extraction_progress') {
-                if (!isExtracting) {
-                    isExtracting = true;
-                    setProgressVisible(true);
-                }
-                updateProgress(message.count, message.phase, message.source, {
-                    total: message.total,
-                    model: message.model
-                });
-                setStatus('Extracting messages…', true);
-            } else if (message.type === 'extraction_completed') {
-                isExtracting = false;
-                setProgressVisible(false);
-                if (message.result && message.result.data) {
-                    cachedResult = message.result;
-                    cachedParams = getCurrentParams();
-                    const msgCount = message.result.data.length;
-                    const sourceMsg = describeSource(message.result);
-                    const partialNotice = message.result.isPartial ? ' (partial)' : '';
-                    setStatus(`Done: ${msgCount.toLocaleString()} messages ready ${sourceMsg}${partialNotice}.`, false);
-                    $('copyBtn').disabled = false;
-                    $('downloadBtn').disabled = false;
-
-                    if (msgCount === 0) {
-                        alert('Extraction finished, but 0 messages were found. Ensure you have the chat open and the correct filters applied.');
-                    }
-                }
-            } else if (message.type === 'extraction_error') {
-                isExtracting = false;
-                setProgressVisible(false);
-                setStatus(`Extraction error: ${message.error || 'Unknown error'}`, false);
-                $('copyBtn').disabled = false;
-                $('downloadBtn').disabled = false;
-            }
-        });
-
-        // Probe chat info and restore any active/completed background state
-        await probeChatInfo();
-    });
-
-    function toggleInputs() {
-        const mode = document.querySelector('input[name="extractMode"]:checked').value;
-        $('dateInputs').style.display = mode === 'date' ? 'block' : 'none';
-        $('countInput').style.display = mode === 'count' ? 'block' : 'none';
     }
 
-    function toggleAdvancedSections() {
-        const thumbsOn = $('toggleThumbnails').checked;
-        $('thumbnailOptions').style.display = thumbsOn ? 'flex' : 'none';
-
-        const aiOn = $('toggleAiCaptions').checked;
-        $('aiOptions').style.display = aiOn ? 'flex' : 'none';
-
-        $('downloadMediaOptions').style.display = $('toggleDownloadMedia').checked ? 'flex' : 'none';
-        $('wajsOptions').style.display = currentEngine() === 'dom' ? 'none' : 'block';
+    function setActionsEnabled(enabled) {
+        $('downloadBtn').disabled = !enabled;
+        $('copyBtn').disabled = !enabled;
     }
 
-    function currentEngine() {
-        return normalizeEngine($('engineSelect') ? $('engineSelect').value : 'auto');
+    function setBusy(busy) {
+        ui.busy = busy;
+        $('actions').hidden = busy;
+        $('progress').hidden = !busy;
+        if (busy) {
+            ui.messagesRead = 0;
+            setStatus('');
+            showProgress({ count: 0, phase: 'starting' });
+        }
     }
 
-    function invalidateCache() {
-        cachedResult = null;
-        cachedParams = null;
+    function phaseText(phase, count, total) {
+        switch (phase) {
+            case 'starting': return t('phStarting');
+            case 'wajs_loading': return t('phLoading');
+            case 'wajs_media': return total ? t('phMediaCache', [I18n.num(count), I18n.num(total)]) : t('phReading');
+            case 'wajs_media_download': return t('phMediaDownload', [I18n.num(count), I18n.num(total || count)]);
+            case 'wajs_sync_older': return t('phOlder');
+            case 'engine_fallback': return t('phFallback');
+            case 'scrolling': return t('phScrolling');
+            case 'syncing_phone': return t('phPhone');
+            case 'capturing_thumbnails': return t('phThumbnails');
+            case 'ai_captioning': return t('phAiImages', [I18n.num(count), I18n.num(total || count)]);
+            case 'ai_transcription': return t('phAiAudio', [I18n.num(count), I18n.num(total || count)]);
+            default: return t('phReading');
+        }
     }
 
-    function getCurrentParams() {
-        const mode = document.querySelector('input[name="extractMode"]:checked').value;
-        const selectedModel = $('aiModelSelect') ? $('aiModelSelect').value : 'auto';
-        const customPrompt = $('customAiPrompt') ? $('customAiPrompt').value.trim() : '';
+    function showProgress({ count = 0, phase = 'starting', total = null }) {
+        if (MESSAGE_PHASES.has(phase)) ui.messagesRead = Math.max(ui.messagesRead, count || 0);
+        $('progressCount').textContent = I18n.num(ui.messagesRead);
+        $('progressUnit').textContent = t(ui.messagesRead === 1 ? 'counter_one' : 'counter_other');
+        $('progressPhase').textContent = phaseText(phase, count, total);
+
+        // Determinate when there is a known end: media/AI totals, or "last N" messages.
+        let fraction = null;
+        if (total) fraction = Math.min(1, count / total);
+        else if (MESSAGE_PHASES.has(phase) && ui.targetCount) fraction = Math.min(1, ui.messagesRead / ui.targetCount);
+        const bar = $('progressBar');
+        bar.classList.toggle('indeterminate', fraction === null);
+        $('progressFill').style.width = fraction === null ? '' : `${Math.round(fraction * 100)}%`;
+        if (fraction === null) bar.removeAttribute('aria-valuenow');
+        else bar.setAttribute('aria-valuenow', String(Math.round(fraction * 100)));
+    }
+
+    /* ── Results ── */
+
+    function resultDetail(result) {
+        const notes = [];
+        if (result.stopReason === 'aborted') notes.push(t('partialCancelled'));
+        else if (result.isPartial && result.olderSync && result.olderSync.skipped === 'disabled' && result.data.length) {
+            notes.push(t('partialOlder', I18n.shortDate(result.data[0].timestamp)));
+        } else if (result.isPartial) notes.push(t('partialGeneric'));
+        if (result.fallbackReason) notes.push(t('usedClassic'));
+        return notes.join(' ');
+    }
+
+    function formatterParams(request) {
         return {
-            chatId: activeChatTitle,
-            mode,
-            startTime: $('startTime').value,
-            endTime: $('endTime').value,
-            messageCount: $('messageCount').value,
-            captureThumbnails: $('toggleThumbnails').checked,
-            thumbnailSize: $('thumbnailResolution').value,
-            enableAiCaptions: $('toggleAiCaptions').checked,
-            enableAiTranscription: $('toggleAiTranscription') ? $('toggleAiTranscription').checked : true,
-            geminiApiKey: $('geminiApiKey').value.trim(),
-            maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
-            model: selectedModel === 'auto' ? null : selectedModel,
-            customPrompt: customPrompt || null,
-            engine: currentEngine(),
-            downloadMissingMedia: $('toggleDownloadMedia').checked,
-            mediaMaxAgeDays: parseInt($('mediaMaxAgeDays').value, 10) || 14,
-            maxMediaDownloads: parseInt($('maxMediaDownloads').value, 10) || 30,
-            syncOlderFromPhone: $('toggleSyncOlder').checked
+            mode: request.mode,
+            startTime: request.startTime,
+            endTime: request.endTime,
+            count: request.count,
+            messageCount: request.count,
+            captureThumbnails: request.captureThumbnails
         };
     }
 
-    function areParamsEqual(p1, p2) {
-        if (!p1 || !p2) return false;
-        if (p1.chatId && p2.chatId && p1.chatId !== p2.chatId) return false;
-        if (p1.mode !== p2.mode) return false;
-        if (normalizeEngine(p1.engine) !== normalizeEngine(p2.engine)) return false;
-        if (!!p1.downloadMissingMedia !== !!p2.downloadMissingMedia) return false;
-        if (!!p1.syncOlderFromPhone !== !!p2.syncOlderFromPhone) return false;
-        if (p1.mediaMaxAgeDays !== p2.mediaMaxAgeDays || p1.maxMediaDownloads !== p2.maxMediaDownloads) return false;
-        if (p1.captureThumbnails !== p2.captureThumbnails) return false;
-        if (p1.thumbnailSize !== p2.thumbnailSize) return false;
-        if (p1.enableAiCaptions !== p2.enableAiCaptions) return false;
-        if (p1.enableAiTranscription !== p2.enableAiTranscription) return false;
-        if (p1.geminiApiKey !== p2.geminiApiKey) return false;
-        if (p1.maxAiRequests !== p2.maxAiRequests) return false;
-        if (p1.model !== p2.model) return false;
-        if (p1.customPrompt !== p2.customPrompt) return false;
-        if (p1.mode === 'date') {
-            return p1.startTime === p2.startTime && p1.endTime === p2.endTime;
+    async function deliver(cacheEntry, action) {
+        const { request, result } = cacheEntry;
+        const format = ui.settings.exportFormat;
+        const params = formatterParams(request);
+        const formatted = Formatters.formatMessages(result.data, format, params, ui.chatTitle, result);
+        if (action === 'copy') {
+            await Session.copyToClipboard(formatted.text);
+        } else {
+            Session.download(Formatters.generateFilename(ui.chatTitle, params, formatted.ext), formatted.text, formatted.mime);
         }
-        if (p1.mode === 'count') {
-            return String(p1.messageCount) === String(p2.messageCount);
-        }
-        return true;
+        setStatus(plural(action === 'copy' ? 'doneCopied' : 'doneDownloaded', result.data.length), resultDetail(result));
     }
 
-    /* ── Content Script Injection ── */
+    /* ── Export ── */
 
-    const REQUIRED_SCRIPTS = [
-        'ai/gemini.js',
-        'db/bridge.js',
-        'extraction/selectors.js',
-        'extraction/parsers.js',
-        'extraction/scroller.js',
-        'export/formatters.js',
-        'extraction/wajs-client.js',
-        'extraction/wajs-mapper.js',
-        'extraction/wajs-engine.js',
-        'extraction/main.js'
-    ];
-
-    // Content scripts only (isolated world). db/page-script.js reaches the MAIN world on demand,
-    // when the DOM engine first queries IndexedDB or media (db/bridge.js).
-    async function ensureInjected(tabId) {
-        for (const file of REQUIRED_SCRIPTS) {
-            try {
-                await browser.scripting.executeScript({
-                    target: { tabId: tabId },
-                    files: [file]
-                });
-            } catch (err) { }
-        }
-    }
-
-    /* ── Tab Helper ── */
-
-    async function getActiveTab() {
-        const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
-        if (activeTab && activeTab.url && activeTab.url.includes('web.whatsapp.com')) {
-            return activeTab;
-        }
-
+    async function run(action) {
+        if (ui.busy || !ui.tabId) return;
+        let request;
         try {
-            const waTabs = await browser.tabs.query({ url: '*://web.whatsapp.com/*' });
-            if (waTabs && waTabs.length > 0) {
-                return waTabs[0];
-            }
-        } catch (e) { }
-
-        return activeTab;
-    }
-
-    async function sendTabMessage(tabId, message, retries = 5) {
-        for (let attempt = 0; attempt <= retries; attempt++) {
-            try {
-                return await browser.tabs.sendMessage(tabId, message);
-            } catch (err) {
-                if (attempt === retries) throw err;
-                await ensureInjected(tabId);
-                await new Promise(resolve => setTimeout(resolve, 350));
-            }
-        }
-    }
-
-    /* ── Chat Insight Probe & State Restoration ── */
-
-    async function probeChatInfo() {
-        const insight = $('chatInsight');
-        const insightText = $('insightText');
-
-        insight.className = 'loading';
-        insightText.textContent = 'Detecting chat…';
-        insight.querySelector('.insight-icon').textContent = '⏳';
-
-        try {
-            const tab = await getActiveTab();
-            if (!tab || !tab.url || !tab.url.includes('web.whatsapp.com')) {
-                showInsight('warning', '⚠️', 'Navigate to WhatsApp Web first.');
-                return;
-            }
-
-            await ensureInjected(tab.id);
-
-            const info = await sendTabMessage(tab.id, { action: 'get_chat_info' });
-
-            if (!info || !info.chatId) {
-                showInsight('warning', '💬', 'Open a chat in WhatsApp Web.');
-                return;
-            }
-
-            const newChatTitle = info.chatName || (info.chatId && info.chatId.includes('@') ? info.chatId.split('@')[0] : info.chatId) || 'WhatsApp Chat';
-
-            // Invalidate cache if switched to a different chat
-            if (activeChatTitle && activeChatTitle !== newChatTitle) {
-                invalidateCache();
-            }
-            activeChatTitle = newChatTitle;
-
-            const msgCount = info.totalMessages ? info.totalMessages.toLocaleString() : '0';
-            const sourceLabel = info.source === 'database' ? 'cached in database' : 'visible in chat';
-            showInsight('ready', '💬', `Ready: ${msgCount} messages (${sourceLabel})`, activeChatTitle);
-
-            $('copyBtn').disabled = false;
-            $('downloadBtn').disabled = false;
-
-            // Restore any running or completed background extraction state
-            await checkAndRestoreBackgroundState(tab.id);
-        } catch (err) {
-            console.error('[WA-Exporter Popup] probe error:', err);
-            showInsight('warning', '❌', 'Could not connect to WhatsApp Web.');
-        }
-    }
-
-    async function checkAndRestoreBackgroundState(tabId) {
-        try {
-            const response = await sendTabMessage(tabId, { action: 'get_extraction_state' });
-            if (!response || !response.state) return;
-
-            const state = response.state;
-
-            // Only restore if the background state belongs to the currently active chat
-            if (state.chatName && activeChatTitle && state.chatName !== activeChatTitle) {
-                return;
-            }
-
-            if (state.status === 'extracting') {
-                isExtracting = true;
-                setProgressVisible(true);
-                $('copyBtn').disabled = true;
-                $('downloadBtn').disabled = true;
-                updateProgress(state.progress?.count || 0, state.progress?.phase || 'scrolling', state.progress?.source || 'dom');
-                setStatus('Extraction in progress in background…', true);
-            } else if (state.status === 'completed' && state.result && state.result.data) {
-                isExtracting = false;
-                setProgressVisible(false);
-                $('copyBtn').disabled = false;
-                $('downloadBtn').disabled = false;
-                cachedResult = state.result;
-                cachedParams = state.request ? {
-                    chatId: activeChatTitle,
-                    mode: state.request.mode,
-                    startTime: $('startTime').value,
-                    endTime: $('endTime').value,
-                    messageCount: $('messageCount').value,
-                    captureThumbnails: $('toggleThumbnails').checked,
-                    thumbnailSize: $('thumbnailResolution').value,
-                    enableAiCaptions: $('toggleAiCaptions').checked,
-                    geminiApiKey: $('geminiApiKey').value.trim(),
-                    maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
-                    model: state.request.model || null,
-                    customPrompt: state.request.customPrompt || null,
-                    engine: normalizeEngine(state.request.engine),
-                    downloadMissingMedia: !!state.request.downloadMissingMedia,
-                    mediaMaxAgeDays: state.request.mediaMaxAgeDays,
-                    maxMediaDownloads: state.request.maxMediaDownloads,
-                    syncOlderFromPhone: !!state.request.syncOlderFromPhone
-                } : getCurrentParams();
-
-                const sourceMsg = describeSource(state.result);
-                const partialNotice = state.result.isPartial ? ' (partial)' : '';
-                setStatus(`Ready: ${state.result.data.length.toLocaleString()} messages extracted ${sourceMsg}${partialNotice}.`, false);
-            }
+            request = Settings.buildRequest(ui.settings, { intent: action });
         } catch (e) {
-            console.warn('[WA-Exporter Popup] Failed to restore background state:', e);
+            setStatus(t(e.i18nKey || 'errCount'), '', true);
+            return;
         }
-    }
-
-    function showInsight(cls, icon, text, chatName = null) {
-        const el = $('chatInsight');
-        el.className = cls;
-        el.querySelector('.insight-icon').textContent = icon;
-        $('insightText').textContent = text;
-
-        const chatBadge = $('chatNameBadge');
-        const chatTitleText = $('activeChatName');
-
-        if (chatName && chatBadge && chatTitleText) {
-            chatTitleText.textContent = chatName;
-            chatBadge.style.display = 'flex';
-        } else if (chatBadge) {
-            chatBadge.style.display = 'none';
-        }
-    }
-
-    /* ── Progress & Status ── */
-
-    function setStatus(msg, showSpinner = false) {
-        const container = $('statusContainer');
-        if (!container) return;
-
-        if (msg) {
-            $('statusMsg').textContent = msg;
-            container.classList.add('visible');
-        } else {
-            container.classList.remove('visible');
-        }
-
-        $('spinner').classList.toggle('active', showSpinner);
-    }
-
-    function setProgressVisible(visible) {
-        const pc = $('progressContainer');
-        const cancelBtn = $('cancelBtn');
-        const barFill = $('progressBarFill');
-        const modelBadge = $('progressModelBadge');
-        const batchDetail = $('progressBatchDetail');
-
-        if (visible) {
-            pc.classList.add('active');
-            cancelBtn.style.display = 'flex';
-        } else {
-            pc.classList.remove('active');
-            cancelBtn.style.display = 'none';
-            if (barFill) {
-                barFill.classList.add('indeterminate');
-                barFill.style.width = '';
-            }
-            if (modelBadge) modelBadge.style.display = 'none';
-            if (batchDetail) batchDetail.textContent = '';
-        }
-    }
-
-    function updateProgress(count, phase = 'scrolling', source = 'dom', extra = {}) {
-        const countEl = $('progressCountText');
-        const phaseEl = $('progressPhaseText');
-        const modelBadge = $('progressModelBadge');
-        const batchDetail = $('progressBatchDetail');
-        const barFill = $('progressBarFill');
-
-        if (countEl) countEl.textContent = `${count.toLocaleString()} items`;
-
-        if (phase === 'ai_captioning' || phase === 'ai_transcription') {
-            const total = extra.total || count || 1;
-            const pct = Math.min(100, Math.round((count / total) * 100));
-            if (barFill) {
-                barFill.classList.remove('indeterminate');
-                barFill.style.width = `${pct}%`;
-            }
-
-            const isAudio = phase === 'ai_transcription';
-            if (phaseEl) phaseEl.textContent = isAudio ? `AI Transcription (${count}/${total})` : `AI Captioning (${count}/${total})`;
-            if (batchDetail) batchDetail.textContent = isAudio ? `Audio STT • ${pct}%` : `4 imgs/call • ${pct}%`;
-
-            if (modelBadge) {
-                const selectedModel = $('aiModelSelect') ? $('aiModelSelect').value : '';
-                const modelName = extra.model || (selectedModel && selectedModel !== 'auto' ? selectedModel : 'gemini-3.5-flash-lite');
-
-                // If model changed (fallback), trigger pulse animation
-                if (modelBadge.dataset.currentModel && modelBadge.dataset.currentModel !== modelName) {
-                    modelBadge.classList.remove('pulsing');
-                    void modelBadge.offsetWidth; // trigger reflow to restart animation
-                    modelBadge.classList.add('pulsing');
-                }
-                modelBadge.dataset.currentModel = modelName;
-
-                modelBadge.textContent = modelName.replace(/^models\//, '');
-                modelBadge.style.display = 'inline-block';
-            }
-        } else {
-            if (phase === 'scrolling' && extra.targetCount && count > 0) {
-                const pct = Math.min(100, Math.round((count / extra.targetCount) * 100));
-                if (barFill) {
-                    barFill.classList.remove('indeterminate');
-                    barFill.style.width = `${pct}%`;
-                }
-            } else {
-                if (barFill) {
-                    barFill.classList.add('indeterminate');
-                    barFill.style.width = '';
-                }
-            }
-            if (modelBadge) modelBadge.style.display = 'none';
-            if (batchDetail) batchDetail.textContent = '';
-
-            if (phaseEl) {
-                if (phase === 'complete') {
-                    phaseEl.textContent = 'Extraction complete';
-                } else if (phase === 'reading_database') {
-                    phaseEl.textContent = 'Reading database…';
-                } else if (phase === 'wajs_loading') {
-                    phaseEl.textContent = 'Loading WA-JS engine…';
-                } else if (phase === 'wajs_paging') {
-                    phaseEl.textContent = 'Reading messages (WA-JS)…';
-                } else if (phase === 'wajs_media') {
-                    phaseEl.textContent = extra.total ? `Reading media cache (${count}/${extra.total})…` : 'Reading media cache…';
-                } else if (phase === 'wajs_media_download') {
-                    phaseEl.textContent = extra.total ? `Downloading media (${count}/${extra.total})…` : 'Downloading media…';
-                } else if (phase === 'wajs_sync_older') {
-                    phaseEl.textContent = 'Loading older messages from phone…';
-                } else if (phase === 'engine_fallback') {
-                    phaseEl.textContent = 'WA-JS unavailable, using DOM…';
-                } else if (phase === 'capturing_thumbnails') {
-                    phaseEl.textContent = `Rendering thumbnails (${count})…`;
-                } else {
-                    if (phase === 'scrolling' && extra.targetCount && count > 0) {
-                        const pct = Math.min(100, Math.round((count / extra.targetCount) * 100));
-                        phaseEl.textContent = `Scrolling chat DOM (${pct}%)`;
-                    } else {
-                        phaseEl.textContent = source === 'dom' ? 'Scrolling chat DOM…' : 'Reading database…';
-                    }
-                }
-            }
-        }
-    }
-
-    /* ── Extraction Core ── */
-
-    async function executeExtraction(intent = null, format = 'txt') {
-        const mode = document.querySelector('input[name="extractMode"]:checked').value;
-        const selectedModel = $('aiModelSelect') ? $('aiModelSelect').value : 'auto';
-        const customPrompt = $('customAiPrompt') ? $('customAiPrompt').value.trim() : '';
-
-        const payload = {
-            action: 'extract_chat',
-            mode,
-            intent,
-            format,
-            captureThumbnails: $('toggleThumbnails').checked,
-            thumbnailSize: $('thumbnailResolution').value,
-            enableAiCaptions: $('toggleAiCaptions').checked,
-            enableAiTranscription: $('toggleAiTranscription') ? $('toggleAiTranscription').checked : true,
-            geminiApiKey: $('geminiApiKey').value.trim(),
-            maxAiRequests: parseInt($('maxAiRequests').value, 10) || 50,
-            model: selectedModel === 'auto' ? null : selectedModel,
-            customPrompt: customPrompt || null,
-            engine: currentEngine(),
-            downloadMissingMedia: $('toggleDownloadMedia').checked,
-            mediaMaxAgeDays: parseInt($('mediaMaxAgeDays').value, 10) || 14,
-            maxMediaDownloads: parseInt($('maxMediaDownloads').value, 10) || 30,
-            syncOlderFromPhone: $('toggleSyncOlder').checked
-        };
-
-        if (mode === 'date') {
-            const startVal = $('startTime').value;
-            const endVal = $('endTime').value;
-            if (!startVal || !endVal) {
-                alert('Please provide start and end timestamps.');
-                return null;
-            }
-            const startTime = new Date(startVal).getTime();
-            const endTime = new Date(endVal).getTime();
-            if (startTime > endTime) {
-                alert('Start timestamp must be before end timestamp.');
-                return null;
-            }
-            payload.start = startTime;
-            payload.end = endTime;
-            payload.startTime = startVal;
-            payload.endTime = endVal;
-        } else if (mode === 'count') {
-            const count = parseInt($('messageCount').value, 10);
-            if (!count || count <= 0) {
-                alert('Invalid message count.');
-                return null;
-            }
-            payload.count = count;
-        }
-
-        const tab = await getActiveTab();
-        if (!tab || !tab.url || !tab.url.includes('web.whatsapp.com')) {
-            alert('Please navigate to WhatsApp Web.');
-            return null;
-        }
-
-        await ensureInjected(tab.id);
-        const response = await sendTabMessage(tab.id, payload);
-
-        if (response?.error) {
-            console.warn('[WA-Exporter Popup] extraction error response:', response.error);
-            alert(response.error);
-            return null;
-        }
-
-        return response;
-    }
-
-    /* ── Export Actions (Copy / Download) ── */
-
-    async function copyToClipboard(text) {
-        try {
-            await navigator.clipboard.writeText(text);
-        } catch (e) {
-            const ta = Object.assign(document.createElement('textarea'), { value: text });
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            ta.remove();
-        }
-    }
-
-    function triggerDownload(filename, text, mime) {
-        browser.runtime.sendMessage({ type: 'download_file', filename, text, mime }).then(res => {
-            if (!res || !res.ok) throw new Error("Background download failed");
-        }).catch(() => {
-            const blob = new Blob([text], { type: mime });
-            const url = URL.createObjectURL(blob);
-            const a = Object.assign(document.createElement('a'), { href: url, download: filename });
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
-        });
-    }
-
-    /* ── Main Action Handler ── */
-
-    async function handleAction(action) {
-        if (isExtracting) return;
-
-        const copyBtn = $('copyBtn');
-        const downloadBtn = $('downloadBtn');
-        const origCopyText = copyBtn.innerHTML;
-        const origDownloadText = downloadBtn.innerHTML;
-
-        const format = document.querySelector('input[name="exportFormat"]:checked').value;
-        const currentParams = getCurrentParams();
-
-        // 1. If we already have valid cached extraction results matching current parameters, export immediately!
-        if (cachedResult && cachedResult.data && cachedResult.data.length > 0 && areParamsEqual(cachedParams, currentParams)) {
-            const formatted = Formatters.formatMessages(cachedResult.data, format, currentParams, activeChatTitle, cachedResult);
-
-            if (action === 'copy') {
-                await copyToClipboard(formatted.text);
-                copyBtn.innerHTML = '<span>✔️</span> Copied!';
-            } else {
-                const filename = Formatters.generateFilename(activeChatTitle, currentParams, formatted.ext);
-                triggerDownload(filename, formatted.text, formatted.mime);
-                downloadBtn.innerHTML = '<span>✔️</span> Downloaded!';
-            }
-
-            setTimeout(() => {
-                copyBtn.innerHTML = origCopyText;
-                downloadBtn.innerHTML = origDownloadText;
-            }, 2500);
+        const key = Settings.keyOfRequest(ui.chatTitle, request);
+        if (ui.cache && ui.cache.key === key && ui.cache.result.data.length) {
+            await deliver(ui.cache, action);
             return;
         }
 
-        // 2. Otherwise, start a fresh extraction
-        isExtracting = true;
-        copyBtn.disabled = true;
-        downloadBtn.disabled = true;
-
-        setProgressVisible(true);
-        updateProgress(0, 'starting');
-        setStatus('Extracting messages…', true);
-
+        ui.targetCount = request.mode === 'count' ? request.count : null;
+        ui.ownRequest = true;
+        setBusy(true);
         try {
-            const response = await executeExtraction(action, format);
-
-            if (!response || !response.data) {
-                setStatus('');
+            const result = await Session.extract(ui.tabId, request);
+            setBusy(false);
+            if (!result || result.error || !result.data) {
+                setStatus(t('errExtraction', (result && result.error) || '—'), '', true);
                 return;
             }
-
-            cachedResult = response;
-            cachedParams = currentParams;
-
-            const messages = response.data;
-            const source = response.source || 'database';
-            const isPartial = !!response.isPartial;
-
-            if (!messages.length) {
-                setStatus('No messages found for the selected filter.', false);
+            ui.cache = { key, request, result };
+            if (!result.data.length) {
+                setStatus(t('noMessages'), resultDetail(result));
                 return;
             }
-
-            const formatted = Formatters.formatMessages(messages, format, currentParams, activeChatTitle, response);
-
-            if (action === 'copy') {
-                await copyToClipboard(formatted.text);
-                copyBtn.innerHTML = '<span>✔️</span> Copied!';
-            } else {
-                const filename = Formatters.generateFilename(activeChatTitle, currentParams, formatted.ext);
-                triggerDownload(filename, formatted.text, formatted.mime);
-                downloadBtn.innerHTML = '<span>✔️</span> Downloaded!';
-            }
-
-            const sourceMsg = describeSource(response);
-            const partialNotice = isPartial ? ' (partial)' : '';
-            setStatus(`Done: ${messages.length.toLocaleString()} messages exported ${sourceMsg}${partialNotice}.`, false);
-        } catch (err) {
-            console.error('[WA-Exporter Popup] extraction execution failed:', err);
-            setStatus('An error occurred during extraction.', false);
-        } finally {
-            isExtracting = false;
-            setProgressVisible(false);
-
-            setTimeout(() => {
-                copyBtn.innerHTML = origCopyText;
-                downloadBtn.innerHTML = origDownloadText;
-                copyBtn.disabled = false;
-                downloadBtn.disabled = false;
-            }, 3000);
-        }
-    }
-
-    async function handleCancel() {
-        try {
-            const tab = await getActiveTab();
-            if (tab?.id) {
-                await sendTabMessage(tab.id, { action: 'cancel_extraction' });
-            }
-            setStatus('Cancelling… returning collected messages.', true);
+            await deliver(ui.cache, action);
         } catch (e) {
-            console.warn('[WA-Exporter Popup] cancel error:', e);
+            setBusy(false);
+            setStatus(t('errExtraction', e.message), '', true);
+        } finally {
+            ui.ownRequest = false;
         }
     }
 
-    /* ── Event Listeners ── */
+    async function cancel() {
+        if (!ui.tabId) return;
+        $('progressPhase').textContent = t('cancelling');
+        try {
+            await Session.cancel(ui.tabId);
+        } catch (e) { }
+    }
 
-    $('copyBtn').addEventListener('click', () => handleAction('copy'));
-    $('downloadBtn').addEventListener('click', () => handleAction('download'));
-    $('cancelBtn').addEventListener('click', handleCancel);
+    /* ── Wiring ── */
+
+    function persist(patch) {
+        Object.assign(ui.settings, patch);
+        Settings.save(patch);
+        renderDependent();
+    }
+
+    function bind() {
+        document.querySelectorAll('input[name="extractMode"]').forEach(r => r.addEventListener('change', () => persist({ extractMode: r.value })));
+        document.querySelectorAll('input[name="exportFormat"]').forEach(r => r.addEventListener('change', () => persist({ exportFormat: r.value })));
+
+        // Typing a count or a date selects its option.
+        $('messageCount').addEventListener('focus', () => { if (ui.settings.extractMode !== 'count') { persist({ extractMode: 'count' }); render(); } });
+        $('messageCount').addEventListener('change', (e) => persist({ messageCount: parseInt(e.target.value, 10) || Settings.DEFAULTS.messageCount }));
+        $('startTime').addEventListener('change', (e) => persist({ startTime: e.target.value }));
+        $('endTime').addEventListener('change', (e) => persist({ endTime: e.target.value }));
+
+        $('captureThumbnails').addEventListener('change', (e) => persist({ captureThumbnails: e.target.checked }));
+        $('enableAiCaptions').addEventListener('change', (e) => persist({ enableAiCaptions: e.target.checked }));
+        $('syncOlderFromPhone').addEventListener('change', (e) => persist({ syncOlderFromPhone: e.target.checked }));
+        $('downloadMissingMedia').addEventListener('change', (e) => persist({ downloadMissingMedia: e.target.checked }));
+
+        $('exportForm').addEventListener('submit', (e) => { e.preventDefault(); run('download'); });
+        $('copyBtn').addEventListener('click', () => run('copy'));
+        $('cancelBtn').addEventListener('click', cancel);
+
+        const openOptions = () => browser.runtime.openOptionsPage();
+        $('openOptions').addEventListener('click', openOptions);
+        $('aiSetup').addEventListener('click', openOptions);
+
+        // Settings changed in the options page while the popup is open.
+        browser.storage.onChanged.addListener((changes, area) => {
+            if (area !== 'local') return;
+            const patch = {};
+            Object.keys(changes).forEach(k => { if (k in Settings.DEFAULTS) patch[k] = changes[k].newValue; });
+            if (!Object.keys(patch).length) return;
+            ui.settings = Settings.normalize(Object.assign({}, ui.settings, patch));
+            renderDependent();
+        });
+
+        Session.onExtractionEvents({
+            progress(msg) {
+                if (!ui.busy) setBusy(true);
+                showProgress({ count: msg.count, phase: msg.phase, total: msg.total });
+            },
+            async completed(result) {
+                if (ui.ownRequest || !result || !result.data) return;
+                setBusy(false);
+                // The request that produced it lives in the tab's state.
+                let request = null;
+                try {
+                    const state = await Session.getState(ui.tabId);
+                    request = (state && state.request) || null;
+                } catch (e) { }
+                adoptBackgroundResult(result, request);
+            },
+            error(message) {
+                if (ui.ownRequest) return;
+                setBusy(false);
+                setStatus(t('errExtraction', message || '—'), '', true);
+            }
+        });
+    }
+
+    // A result produced while the popup was closed (or by another popup): reuse it.
+    function adoptBackgroundResult(result, request) {
+        if (request) ui.cache = { key: Settings.keyOfRequest(ui.chatTitle, request), request, result };
+        if (!result.data.length) return setStatus(t('noMessages'), resultDetail(result));
+        setStatus(plural('doneReady', result.data.length), resultDetail(result));
+    }
+
+    async function connect() {
+        setActionsEnabled(false);
+        const res = await Session.connect();
+        if (res.error) {
+            setChat(null, res.error);
+            return;
+        }
+        ui.tabId = res.tab.id;
+        ui.chatTitle = res.info.chatName || t('noChatTitle');
+        setChat(ui.chatTitle, 'metaReady');
+        setActionsEnabled(true);
+
+        try {
+            const state = await Session.getState(ui.tabId);
+            if (!state || (state.chatName && state.chatName !== ui.chatTitle)) return;
+            if (state.status === 'extracting') {
+                ui.targetCount = state.request && state.request.mode === 'count' ? state.request.count : null;
+                setBusy(true);
+                const p = state.progress || {};
+                showProgress({ count: p.count || 0, phase: p.phase || 'wajs_paging' });
+            } else if (state.status === 'completed' && state.result && state.result.data) {
+                adoptBackgroundResult(state.result, state.request);
+            }
+        } catch (e) {
+            console.warn('[WA-Exporter Popup] Could not read the extraction state:', e);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        I18n.apply();
+        ui.settings = await Settings.load();
+        render();
+        bind();
+        await connect();
+    });
 })();
