@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WA Web Chat Exporter</title>
+    <link rel="stylesheet" href="../popup/theme.css">
+    <link rel="stylesheet" href="options.css">
+</head>
+
+<body>
+    <main class="page">
+        <header class="page-header">
+            <h1 data-i18n="optTitle">Settings</h1>
+            <p id="savedNote" class="saved muted" role="status" aria-live="polite"></p>
+        </header>
+
+        <section class="section" aria-labelledby="readerTitle">
+            <h2 id="readerTitle" data-i18n="optReader">Reader</h2>
+            <fieldset class="choices">
+                <legend class="visually-hidden" data-i18n="optReader">Reader</legend>
+                <label class="choice">
+                    <input type="radio" name="extractEngine" value="auto">
+                    <span>
+                        <span class="choice-title" data-i18n="optReaderFast">Fast (recommended)</span>
+                        <span class="hint muted" data-i18n="optReaderFastHint"></span>
+                    </span>
+                </label>
+                <label class="choice">
+                    <input type="radio" name="extractEngine" value="dom">
+                    <span>
+                        <span class="choice-title" data-i18n="optReaderClassic">Classic</span>
+                        <span class="hint muted" data-i18n="optReaderClassicHint"></span>
+                    </span>
+                </label>
+            </fieldset>
+        </section>
+
+        <section class="section" aria-labelledby="thumbsTitle">
+            <h2 id="thumbsTitle" data-i18n="optThumbs">Thumbnails</h2>
+            <label class="row">
+                <span class="row-label" data-i18n="optThumbSize">Size</span>
+                <select id="thumbnailResolution" class="field">
+                    <option value="120" data-i18n="optThumb120">Small, 120 px</option>
+                    <option value="160" data-i18n="optThumb160">Medium, 160 px</option>
+                    <option value="256" data-i18n="optThumb256">Large, 256 px</option>
+                </select>
+            </label>
+        </section>
+
+        <section class="section" aria-labelledby="mediaTitle">
+            <h2 id="mediaTitle"><span data-i18n="optMedia">Recent media download</span> <span class="tag-network" data-i18n="usesNetwork">Uses network</span></h2>
+            <label class="row">
+                <span class="row-label" data-i18n="optMediaAge">Only from the last</span>
+                <span class="row-control">
+                    <input type="number" id="mediaMaxAgeDays" class="field narrow" min="1" max="30" step="1" inputmode="numeric" autocomplete="off">
+                    <span data-i18n="optDays">days</span>
+                </span>
+            </label>
+            <label class="row">
+                <span class="row-label" data-i18n="optMediaMax">At most</span>
+                <span class="row-control">
+                    <input type="number" id="maxMediaDownloads" class="field narrow" min="1" max="100" step="5" inputmode="numeric" autocomplete="off">
+                    <span data-i18n="optItems">items per export</span>
+                </span>
+            </label>
+            <p class="hint muted" data-i18n="optMediaHint"></p>
+        </section>
+
+        <section class="section" aria-labelledby="geminiTitle">
+            <h2 id="geminiTitle"><span data-i18n="optGemini">Gemini (optional)</span> <span class="tag-network" data-i18n="usesNetwork">Uses network</span></h2>
+            <p class="hint muted" data-i18n="optGeminiIntro"></p>
+
+            <label class="stack" for="geminiApiKey">
+                <span class="row-label" data-i18n="optKey">API key</span>
+            </label>
+            <div class="key-row">
+                <input type="password" id="geminiApiKey" class="field" placeholder="AIza…" autocomplete="off" spellcheck="false" translate="no">
+                <button type="button" id="checkKey" class="button-secondary" data-i18n="optKeyCheck">Check key</button>
+            </div>
+            <p id="keyStatus" class="key-status" role="status" aria-live="polite"></p>
+
+            <label class="row">
+                <span class="row-label" data-i18n="optModel">Model</span>
+                <select id="aiModelPreference" class="field">
+                    <option value="auto" data-i18n="optModelAuto">Automatic (recommended)</option>
+                    <option value="gemini-3.5-flash-lite" translate="no">Gemini 3.5 Flash Lite</option>
+                    <option value="gemini-3.1-flash-lite" translate="no">Gemini 3.1 Flash Lite</option>
+                    <option value="gemini-3.7-flash" translate="no">Gemini 3.7 Flash</option>
+                    <option value="gemini-3.6-flash" translate="no">Gemini 3.6 Flash</option>
+                    <option value="gemini-3.5-flash" translate="no">Gemini 3.5 Flash</option>
+                    <option value="gemini-2.5-flash-lite" translate="no">Gemini 2.5 Flash Lite</option>
+                    <option value="gemini-2.5-flash" translate="no">Gemini 2.5 Flash</option>
+                </select>
+            </label>
+
+            <label class="row">
+                <span class="row-label" data-i18n="optBudget">API calls per export</span>
+                <span class="row-control">
+                    <input type="number" id="maxAiRequests" class="field narrow" min="1" max="500" step="5" inputmode="numeric" autocomplete="off" aria-describedby="budgetHint">
+                    <span id="budgetHint" class="muted tabular"></span>
+                </span>
+            </label>
+
+            <label class="check">
+                <input type="checkbox" id="aiDescribeImages">
+                <span data-i18n="optDescribe">Describe images</span>
+            </label>
+            <label class="check">
+                <input type="checkbox" id="enableAiTranscription">
+                <span data-i18n="optTranscribe">Transcribe voice notes up to 5 minutes</span>
+            </label>
+
+            <label class="stack" for="customAiPrompt">
+                <span class="row-label" data-i18n="optPrompt">Instructions for image descriptions</span>
+                <span class="hint muted" data-i18n="optPromptHint"></span>
+            </label>
+            <textarea id="customAiPrompt" class="field prompt" rows="3" data-i18n-placeholder="optPromptPlaceholder"></textarea>
+            <button type="button" id="resetPrompt" class="button-text" data-i18n="optPromptReset">Use default</button>
+        </section>
+
+        <section class="section" aria-labelledby="privacyTitle">
+            <h2 id="privacyTitle" data-i18n="optPrivacy">Privacy</h2>
+            <p class="hint" data-i18n="optPrivacyText"></p>
+        </section>
+
+        <footer class="page-footer muted">
+            <span id="version" class="tabular"></span>
+            <a href="../fonts/OFL.txt" target="_blank" rel="noopener" translate="no">Atkinson Hyperlegible Next (OFL)</a>
+        </footer>
+    </main>
+
+    <script src="../popup/settings.js"></script>
+    <script src="../popup/i18n.js"></script>
+    <script src="options.js"></script>
+</body>
+
+</html>

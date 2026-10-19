@@ -1,0 +1,177 @@
+/* Options page layout. Tokens and controls: ../popup/theme.css. */
+
+body {
+    font-size: var(--text-md);
+}
+
+.page {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 32px 24px 48px;
+}
+
+.page-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--rule);
+}
+
+h1 {
+    font-size: 28px;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+}
+
+.saved {
+    font-size: var(--text-sm);
+}
+
+.section {
+    padding: 20px 0;
+    border-bottom: 1px solid var(--rule);
+}
+
+h2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 18px;
+    margin-bottom: 10px;
+}
+
+.hint {
+    display: block;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    max-width: 60ch;
+    text-wrap: pretty;
+}
+
+.section > .hint {
+    margin: 4px 0 12px;
+}
+
+.choices {
+    display: grid;
+    gap: 12px;
+}
+
+.choice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    cursor: pointer;
+}
+
+.choice input {
+    margin-top: 3px;
+}
+
+.choice-title {
+    display: block;
+    font-weight: 700;
+}
+
+.row {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    align-items: center;
+    gap: 12px;
+    margin: 10px 0;
+}
+
+.row-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.row-label {
+    font-weight: 700;
+    font-size: var(--text-sm);
+}
+
+.stack {
+    display: block;
+    margin: 16px 0 6px;
+}
+
+.stack .hint {
+    font-weight: 400;
+}
+
+.field.narrow {
+    width: 88px;
+}
+
+select.field {
+    max-width: 280px;
+}
+
+.key-row {
+    display: flex;
+    gap: 8px;
+}
+
+.key-row .field {
+    flex: 1;
+}
+
+.key-status {
+    min-height: 1.5em;
+    margin-top: 6px;
+    font-size: var(--text-sm);
+}
+
+.key-status.ok {
+    color: var(--ledger);
+}
+
+.key-status.error {
+    color: var(--danger);
+}
+
+.check {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+    cursor: pointer;
+}
+
+.field.prompt {
+    display: block;
+    width: 100%;
+    resize: vertical;
+    line-height: 1.45;
+}
+
+.page-footer {
+    display: flex;
+    gap: 16px;
+    padding-top: 20px;
+    font-size: var(--text-sm);
+}
+
+.page-footer a {
+    color: inherit;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+    .row {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+}
