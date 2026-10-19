@@ -20,6 +20,7 @@ function makeHistory(n = 100) {
 function setup({ history = makeHistory(), health = null, failFrom = Infinity } = {}) {
     const W = loadScripts('extraction/wajs-mapper.js', 'extraction/wajs-engine.js');
     Object.assign(W.WajsEngine.PACING, { pauseMinMs: 0, pauseMaxMs: 0, longPauseMinMs: 0, longPauseMaxMs: 0 });
+    Object.assign(W.WajsEngine.MEDIA_PACING, { minMs: 0, maxMs: 0 });
     const calls = [];
     W.Wajs = {
         ensureInjected: async () => ({ ok: true }),
@@ -29,6 +30,13 @@ function setup({ history = makeHistory(), health = null, failFrom = Infinity } =
                 return health || { ok: true, chat: { id: GROUP, title: 'G' }, waVersion: 'wa', wajsVersion: '4.6.1' };
             }
             if (action === 'wajs_release') return { released: true };
+            if (action === 'wajs_media_thumbnail') {
+                if (params.id === 'boom') throw new Error('read_failed');
+                return params.id.startsWith('cached') ? { dataUri: 'data:image/webp;base64,AA', source: 'cache:lru' } : { dataUri: null, source: null };
+            }
+            if (action === 'wajs_media_audio') {
+                return params.id.startsWith('cached') ? { dataUri: 'data:audio/ogg;base64,AA', source: 'cache:lru' } : { dataUri: null, reason: 'not_cached' };
+            }
             if (action === 'wajs_get_messages') {
                 if (calls.filter(c => c.action === 'wajs_get_messages').length > failFrom) throw new Error('boom');
                 const end = params.id ? history.findIndex(m => m.id === params.id) : history.length;
@@ -54,6 +62,8 @@ test('all: pages until the local cache boundary, excludes system entries, keeps 
     assert.ok(pages.every(c => c.params.count === 40), 'page size 40, never -1');
     assert.equal(pages[0].params.id, undefined);
     assert.equal(pages[1].params.id, `true_${GROUP}_M0060_${SELF}`);
+    assert.ok(!calls.some(c => c.action === 'wajs_release'), 'run() keeps the host open for enrichMedia');
+    await W.WajsEngine.release();
     assert.ok(calls.some(c => c.action === 'wajs_release'));
 });
 
@@ -116,4 +126,43 @@ test('anchors on the first entry of each page, not on the smallest timestamp', a
     const dateRes = await setup({ history }).W.WajsEngine.run({ mode: 'date', start: (1760000000 + 30 * 60) * 1000, end: Infinity }, null);
     assert.equal(dateRes.stopReason, 'reached_start_date');
     assert.equal(dateRes.isPartial, false);
+});
+
+function mediaMsg(id, type, extra = {}) {
+    return Object.assign({ id, type, engine: 'wajs', thumbnail: null, duration: null,
+        media: { mimetype: null, filename: null, size: null, duration: null, status: 'not_downloaded' } }, extra);
+}
+
+test('enrichMedia fills thumbnails and audio from local caches and sets statuses', async () => {
+    const { W, calls } = setup();
+    const msgs = [
+        mediaMsg('cached-sticker', 'sticker'),
+        mediaMsg('miss-image', 'image'),
+        mediaMsg('has-thumb', 'image', { thumbnail: 'data:image/jpeg;base64,X' }),
+        mediaMsg('cached-ptt', 'ptt', { duration: 8 }),
+        mediaMsg('cached-long', 'audio', { duration: 301 }),
+        mediaMsg('boom', 'sticker'),
+        { id: 'dom-1', type: 'ptt', engine: 'dom' }
+    ];
+    const stats = plain(await W.WajsEngine.enrichMedia(msgs, { thumbnails: true, audio: true, maxSize: 120 }, null));
+    assert.deepEqual(stats, { thumbnails: 1, audio: 1, notCached: 1, errors: 1, sources: { 'cache:lru': 2 } });
+    assert.equal(msgs[0].media.status, 'thumbnail');
+    assert.equal(msgs[0].thumbnail, 'data:image/webp;base64,AA');
+    assert.equal(msgs[1].media.status, 'not_downloaded');
+    assert.equal(msgs[3].media.status, 'cached');
+    assert.equal(msgs[3].audioData, 'data:audio/ogg;base64,AA');
+    assert.equal(msgs[4].audioData, undefined, 'over 5 minutes is skipped');
+    assert.equal(msgs[5].media.status, 'error');
+    const mediaCalls = calls.filter(c => c.action.startsWith('wajs_media'));
+    assert.equal(mediaCalls.length, 4, 'skips existing thumbnails, long audio and DOM messages');
+    assert.ok(mediaCalls.filter(c => c.action === 'wajs_media_thumbnail').every(c => c.params.maxSize === 120));
+});
+
+test('enrichMedia skips audio when transcription is off and honours abort', async () => {
+    const { W, calls } = setup();
+    await W.WajsEngine.enrichMedia([mediaMsg('cached-ptt', 'ptt')], { thumbnails: true, audio: false }, null);
+    assert.equal(calls.filter(c => c.action === 'wajs_media_audio').length, 0);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(W.WajsEngine.enrichMedia([mediaMsg('cached-sticker', 'sticker')], { thumbnails: true }, controller.signal), /Aborted/);
 });

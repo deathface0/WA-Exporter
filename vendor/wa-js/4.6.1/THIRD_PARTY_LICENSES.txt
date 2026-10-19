@@ -90,7 +90,8 @@
  * WA-Exporter minimal WA-JS entry.
  *
  * Derived from WPPConnect WA-JS (src/index.ts, src/chat/functions/getMessages.ts,
- * src/chat/functions/getActiveChat.ts), Copyright 2021 WPPConnect Team,
+ * src/chat/functions/getActiveChat.ts, src/chat/functions/downloadMedia.ts,
+ * src/util/toArrayBuffer.ts), Copyright 2021 WPPConnect Team,
  * licensed under the Apache License, Version 2.0:
  * http://www.apache.org/licenses/LICENSE-2.0
  *

@@ -2,7 +2,8 @@
  * WA-Exporter minimal WA-JS entry.
  *
  * Derived from WPPConnect WA-JS (src/index.ts, src/chat/functions/getMessages.ts,
- * src/chat/functions/getActiveChat.ts), Copyright 2021 WPPConnect Team,
+ * src/chat/functions/getActiveChat.ts, src/chat/functions/downloadMedia.ts,
+ * src/util/toArrayBuffer.ts), Copyright 2021 WPPConnect Team,
  * licensed under the Apache License, Version 2.0:
  * http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -15,6 +16,8 @@
 import { internalEv } from './eventEmitter';
 import * as loader from './loader';
 import { msgFindByDirection } from './whatsapp/functions/msgFindByDirection';
+import { LruMediaStore } from './whatsapp/misc/LruMediaStore';
+import { MediaBlobCache } from './whatsapp/misc/MediaBlobCache';
 import { ChatStore, MsgStore } from './whatsapp/stores';
 
 declare const __VERSION__: string;
@@ -28,6 +31,8 @@ export const flavor = 'wa-exporter-minimal';
 // Serialized ids come from WhatsApp's own toString(); `_serialized` is no longer
 // populated on current builds and WA-JS' MsgKey patch is not included here.
 const anchors = new Map<string, any>();
+// Messages returned by getMessages(); media can only be read for these.
+const listed = new Map<string, any>();
 
 function getActiveChat(): any {
   return ChatStore.getModelsArray().find((c: any) => c.active);
@@ -74,16 +79,100 @@ async function getMessages(
   }
 
   for (const m of msgs) {
-    if (m && m.id) anchors.set(m.id.toString(), m.id);
+    if (!m || !m.id) continue;
+    const key = m.id.toString();
+    anchors.set(key, m.id);
+    listed.set(key, m);
   }
   return msgs;
 }
 
 function reset(): void {
   anchors.clear();
+  listed.clear();
 }
 
 export const chat = { getActiveChat, getMessages, reset };
+
+function toArrayBuffer(data: any): ArrayBuffer | null {
+  if (!data) return null;
+  if (data instanceof ArrayBuffer) return data;
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice().buffer;
+  }
+  return new Uint8Array(data).slice().buffer;
+}
+
+function mediaSource(id: string): { live: any; mediaData: any; filehash: string | null; mimetype: string } {
+  const msg = listed.get(id);
+  if (!msg) throw new Error('unknown_message');
+  const live: any = MsgStore.get(msg.id) || msg;
+  const mediaData = live.mediaData || null;
+  return {
+    live,
+    mediaData,
+    filehash: (mediaData && mediaData.filehash) || live.filehash || msg.filehash || null,
+    mimetype: (mediaData && mediaData.mimetype) || live.mimetype || 'application/octet-stream'
+  };
+}
+
+/**
+ * Cache-only part of upstream downloadMedia(): persistent LruMediaStore, in-memory
+ * MediaBlobCache, then the opaque blob already attached to the model. Never downloads.
+ */
+async function getCached(id: string): Promise<{ blob: Blob | null; source: string | null }> {
+  const { mediaData, filehash, mimetype } = mediaSource(id);
+
+  if (filehash && typeof (LruMediaStore as any)?.get === 'function') {
+    const buffer = toArrayBuffer(await LruMediaStore.get(filehash).catch(() => null));
+    if (buffer) return { blob: new Blob([buffer], { type: mimetype }), source: 'lru' };
+  }
+  if (filehash && (MediaBlobCache as any)?.has?.(filehash)) {
+    return { blob: MediaBlobCache.get(filehash), source: 'memory' };
+  }
+  if (mediaData && mediaData.mediaBlob && typeof mediaData.mediaBlob.forceToBlob === 'function') {
+    const blob = mediaData.mediaBlob.forceToBlob();
+    if (blob) return { blob, source: 'opaque' };
+  }
+  return { blob: null, source: null };
+}
+
+// Raw thumbnail-like fields on the message, if any (base64 strings or data URIs).
+function thumbnailFields(id: string): Record<string, string> {
+  const { live, mediaData } = mediaSource(id);
+  const out: Record<string, string> = {};
+  const candidates: Record<string, any> = {
+    thumbnail: live.thumbnail,
+    mediaPngThumbnail: live.mediaPngThumbnail,
+    thumbnailHQ: live.thumbnailHQ,
+    preview: mediaData && mediaData.preview
+  };
+  for (const name of Object.keys(candidates)) {
+    if (typeof candidates[name] === 'string' && candidates[name]) out[name] = candidates[name];
+  }
+  return out;
+}
+
+async function info(id: string): Promise<any> {
+  const { live, mediaData, filehash } = mediaSource(id);
+  let inLru: boolean | null = null;
+  if (filehash && typeof (LruMediaStore as any)?.has === 'function') {
+    inLru = await LruMediaStore.has(filehash).catch(() => null);
+  }
+  const fields = thumbnailFields(id);
+  return {
+    isLiveModel: live !== listed.get(id) || typeof live.get === 'function',
+    hasMediaData: !!mediaData,
+    mediaStage: mediaData ? String(mediaData.mediaStage || '') || null : null,
+    hasFilehash: !!filehash,
+    inLru,
+    inMemory: !!(filehash && (MediaBlobCache as any)?.has?.(filehash)),
+    hasOpaqueBlob: !!(mediaData && mediaData.mediaBlob),
+    thumbnailFields: Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, { length: v.length, prefix: v.slice(0, 5) }]))
+  };
+}
+
+export const media = { getCached, thumbnailFields, info };
 
 // Upstream conn/events/registerMainInit.ts is excluded, but the meta loader waits for
 // 'conn.main_init' before setting isReady. Same passive check as conn/functions/isMainInit.

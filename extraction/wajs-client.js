@@ -7,15 +7,19 @@
 
     window.WAExporter = window.WAExporter || {};
 
-    const ALLOWED_ACTIONS = ['wajs_health', 'wajs_active_chat', 'wajs_get_messages', 'wajs_release'];
+    const ALLOWED_ACTIONS = ['wajs_health', 'wajs_active_chat', 'wajs_get_messages', 'wajs_release',
+        'wajs_media_info', 'wajs_media_thumbnail', 'wajs_media_audio'];
     const TIMEOUTS = {
         wajs_health: 25000,
         wajs_active_chat: 2000,
         wajs_get_messages: 15000,
-        wajs_release: 2000
+        wajs_release: 2000,
+        wajs_media_info: 3000,
+        wajs_media_thumbnail: 5000,
+        wajs_media_audio: 8000
     };
 
-    // Asks the background to inject WPPConfig + bundle + host into the MAIN world.
+    // Asks the background to inject the minimal bundle + host into the MAIN world.
     // Only called when the user starts an export (or a dev probe).
     async function ensureInjected(version = null) {
         const res = await browser.runtime.sendMessage({ type: 'inject_wajs', version });

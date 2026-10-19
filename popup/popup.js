@@ -643,6 +643,8 @@
                     phaseEl.textContent = 'Loading WA-JS engine…';
                 } else if (phase === 'wajs_paging') {
                     phaseEl.textContent = 'Reading messages (WA-JS)…';
+                } else if (phase === 'wajs_media') {
+                    phaseEl.textContent = extra.total ? `Reading media cache (${count}/${extra.total})…` : 'Reading media cache…';
                 } else if (phase === 'engine_fallback') {
                     phaseEl.textContent = 'WA-JS unavailable, using DOM…';
                 } else if (phase === 'capturing_thumbnails') {

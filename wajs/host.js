@@ -17,7 +17,11 @@
 
     const READY_TIMEOUT_MS = 20000;
     const MAX_PAGE_SIZE = 50;
-    const ALLOWED_ACTIONS = ['wajs_health', 'wajs_active_chat', 'wajs_get_messages', 'wajs_release'];
+    const ALLOWED_ACTIONS = ['wajs_health', 'wajs_active_chat', 'wajs_get_messages', 'wajs_release',
+        'wajs_media_info', 'wajs_media_thumbnail', 'wajs_media_audio'];
+    const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
+    // Base64 signatures of image payloads found in thumbnail fields.
+    const IMAGE_PREFIXES = { '/9j/': 'image/jpeg', 'iVBOR': 'image/png', 'UklGR': 'image/webp' };
 
     // Fields copied from MsgModel instances; getMessages returns live models, not plain objects.
     const MESSAGE_FIELDS = [
@@ -54,7 +58,10 @@
         const required = {
             'chat.getMessages': core.chat && core.chat.getMessages,
             'chat.getActiveChat': core.chat && core.chat.getActiveChat,
-            'chat.reset': core.chat && core.chat.reset
+            'chat.reset': core.chat && core.chat.reset,
+            'media.getCached': core.media && core.media.getCached,
+            'media.thumbnailFields': core.media && core.media.thumbnailFields,
+            'media.info': core.media && core.media.info
         };
         return Object.keys(required).filter(name => typeof required[name] !== 'function');
     }
@@ -180,6 +187,74 @@
         return (msgs || []).map(m => projectMessage(m, !!params.includeKeys));
     }
 
+    function base64ToBlob(b64, mime) {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new Blob([bytes], { type: mime });
+    }
+
+    // Thumbnail fields hold base64 images or data URIs; decoded locally, never fetched.
+    function fieldToBlob(value) {
+        const dataUri = /^data:(image\/[\w.+-]+);base64,(.+)$/.exec(value);
+        if (dataUri) return base64ToBlob(dataUri[2], dataUri[1]);
+        for (const prefix of Object.keys(IMAGE_PREFIXES)) {
+            if (value.startsWith(prefix)) return base64ToBlob(value, IMAGE_PREFIXES[prefix]);
+        }
+        return null;
+    }
+
+    async function resizeToDataUri(blob, maxSize) {
+        let bitmap;
+        try {
+            bitmap = await createImageBitmap(blob);
+        } catch (e) {
+            return null; // not a decodable image (e.g. video)
+        }
+        const scale = Math.min(1, maxSize / Math.max(bitmap.width, bitmap.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close();
+        let dataUri = canvas.toDataURL('image/webp', 0.6);
+        if (!dataUri.startsWith('data:image/webp')) dataUri = canvas.toDataURL('image/jpeg', 0.6);
+        return dataUri;
+    }
+
+    function blobToDataUri(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('read_failed'));
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    // Local sources only: thumbnail fields on the message, then the media caches.
+    async function mediaThumbnail(id, maxSize) {
+        const fields = core.media.thumbnailFields(id);
+        for (const name of Object.keys(fields)) {
+            const blob = fieldToBlob(fields[name]);
+            const dataUri = blob && await resizeToDataUri(blob, maxSize);
+            if (dataUri) return { dataUri, source: 'field:' + name };
+        }
+        const cached = await core.media.getCached(id);
+        if (cached.blob && /^image\//.test(cached.blob.type || '')) {
+            const dataUri = await resizeToDataUri(cached.blob, maxSize);
+            if (dataUri) return { dataUri, source: 'cache:' + cached.source };
+        }
+        return { dataUri: null, source: null };
+    }
+
+    async function mediaAudio(id) {
+        const cached = await core.media.getCached(id);
+        if (!cached.blob) return { dataUri: null, reason: 'not_cached' };
+        if (!/^audio\//.test(cached.blob.type || '')) return { dataUri: null, reason: 'not_audio' };
+        if (cached.blob.size > MAX_AUDIO_BYTES) return { dataUri: null, reason: 'too_large' };
+        return { dataUri: await blobToDataUri(cached.blob), source: 'cache:' + cached.source, size: cached.blob.size };
+    }
+
     function release() {
         core.chat.reset();
         try { delete window.__waExpCore; } catch (e) { }
@@ -212,6 +287,15 @@
                 }
                 if (params.id !== undefined && typeof params.id !== 'string') return reply(callbackId, { error: 'Invalid id' });
                 return reply(callbackId, { result: await getMessages(params) });
+            }
+
+            if (action === 'wajs_media_info' || action === 'wajs_media_thumbnail' || action === 'wajs_media_audio') {
+                // Only ids returned by a previous wajs_get_messages are known to the bundle.
+                if (typeof params?.id !== 'string') return reply(callbackId, { error: 'Invalid id' });
+                if (action === 'wajs_media_info') return reply(callbackId, { result: await core.media.info(params.id) });
+                if (action === 'wajs_media_audio') return reply(callbackId, { result: await mediaAudio(params.id) });
+                const maxSize = Number.isInteger(params.maxSize) && params.maxSize >= 32 && params.maxSize <= 512 ? params.maxSize : 160;
+                return reply(callbackId, { result: await mediaThumbnail(params.id, maxSize) });
             }
         } catch (err) {
             reply(callbackId, { error: (err && (err.code || err.message)) || 'Unknown error' });

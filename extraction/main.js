@@ -179,11 +179,23 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                 if (request.engine === 'wajs' && window.WAExporter.WajsEngine) {
                     const Engine = window.WAExporter.WajsEngine;
                     const signal = window.WAExporter.State.abortController.signal;
+                    const onWajsProgress = (count, phase, total) => {
+                        window.WAExporter.State.progress = { count, phase, source: 'wajs' };
+                        broadcastProgress(count, phase, 'wajs', total ? { total } : {});
+                    };
                     try {
-                        const wajsRes = await Engine.run(request, signal, (count, phase) => {
-                            window.WAExporter.State.progress = { count, phase, source: 'wajs' };
-                            broadcastProgress(count, phase, 'wajs');
-                        });
+                        let wajsRes;
+                        try {
+                            wajsRes = await Engine.run(request, signal, onWajsProgress);
+                            // Local media caches only; release the host before any AI calls.
+                            await Engine.enrichMedia(wajsRes.messages, {
+                                thumbnails: request.captureThumbnails !== false || !!(request.enableAiCaptions && request.geminiApiKey),
+                                audio: !!(request.enableAiTranscription && request.geminiApiKey && window.WAExporter.Gemini),
+                                maxSize: parseInt(request.thumbnailSize, 10) || 160
+                            }, signal, onWajsProgress);
+                        } finally {
+                            await Engine.release();
+                        }
                         const processedMessages = await runMediaAndAiPipeline(wajsRes.messages, request);
                         if (signal.aborted) throw new Error("Aborted");
                         const res = {
@@ -453,7 +465,8 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
         // 2.5 Late Audio Capture Pipeline
         const shouldRunTranscription = request && request.enableAiTranscription && request.geminiApiKey && window.WAExporter.Gemini;
         const audioItems = shouldRunTranscription ? messages.map((m, idx) => ({ key: idx, msg: m }))
-            .filter(item => item.msg && ['ptt', 'audio'].includes(item.msg.type) && !item.msg.audioData) : [];
+            // WA-JS messages never use the DOM right-click capture; their audio comes from enrichMedia().
+            .filter(item => item.msg && item.msg.engine !== 'wajs' && ['ptt', 'audio'].includes(item.msg.type) && !item.msg.audioData) : [];
 
         if (audioItems.length > 0) {
             console.log(`[WA-Exporter] 🎤 Processing late capture for ${audioItems.length} audio items sequentially...`);

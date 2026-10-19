@@ -21,10 +21,14 @@ const ALLOWED = new Set([
     'core.chat',
     'core.chat.getActiveChat',
     'core.chat.getMessages',
-    'core.chat.reset'
+    'core.chat.reset',
+    'core.media',
+    'core.media.getCached',
+    'core.media.thumbnailFields',
+    'core.media.info'
 ]);
 
-const DENY = /\b(send\w*|mark\w*|star\w*|pin\w*|archive|unarchive|delete\w*|edit\w*|forward\w*|react\w*|subscribePresence|block\w*|clear|mute|unmute|join\w*|leave|set\w*|queryExists|openChat\w*|keepMessage|requestPhoneNumber|rehydrateMessage)\b/;
+const DENY = /\b(send\w*|mark\w*|star\w*|pin\w*|archive|unarchive|delete\w*|edit\w*|forward\w*|react\w*|subscribePresence|block\w*|clear|mute|unmute|download\w*|join\w*|leave|set\w*|queryExists|openChat\w*|keepMessage|requestPhoneNumber|rehydrateMessage)\b/;
 
 const source = readFileSync(HOST, 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')

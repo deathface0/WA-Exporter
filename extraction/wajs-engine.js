@@ -15,6 +15,12 @@
         maxConsecutiveErrors: 2
     };
 
+    // Media comes from local caches only (no network), but reads are still spaced out.
+    const MEDIA_PACING = { minMs: 200, maxMs: 400 };
+    const THUMBNAIL_TYPES = ['image', 'video', 'gif', 'sticker'];
+    const AUDIO_TYPES = ['ptt', 'audio'];
+    const MAX_AUDIO_SECONDS = 300;
+
     // WhatsApp launched in 2009; anything older is a broken timestamp and must not
     // drive the date-range stop.
     const MIN_PLAUSIBLE_T = 1230768000;
@@ -66,6 +72,7 @@
      * Resolves to { messages, isPartial, stopReason, engine, pages, waVersion, wajsVersion }.
      * Throws WajsUnavailable when WA-JS cannot be used (caller falls back to DOM),
      * or WajsMidRunError with the messages collected so far.
+     * The host stays open for enrichMedia(); callers must call release() afterwards.
      */
     async function run(request, signal, onProgress = () => { }) {
         const Wajs = window.WAExporter.Wajs;
@@ -199,8 +206,6 @@
             } else {
                 throw e;
             }
-        } finally {
-            Wajs.call('wajs_release').catch(() => { });
         }
 
         const messages = collect();
@@ -221,5 +226,60 @@
         };
     }
 
-    window.WAExporter.WajsEngine = { run, PACING, WajsUnavailable, WajsMidRunError };
+    /**
+     * Fills thumbnails and voice-note audio for WA-JS messages from local sources only
+     * (thumbnail fields and WhatsApp's media caches). Updates m.media.status:
+     * 'thumbnail' | 'cached' | 'not_downloaded' | 'error'. Never downloads.
+     * opts: { thumbnails, audio, maxSize }
+     */
+    async function enrichMedia(messages, opts, signal, onProgress = () => { }) {
+        const Wajs = window.WAExporter.Wajs;
+        const stats = { thumbnails: 0, audio: 0, notCached: 0, errors: 0, sources: {} };
+        const work = (messages || []).filter(m => m && m.engine === 'wajs' && m.media && (
+            (opts.thumbnails && THUMBNAIL_TYPES.includes(m.type) && !m.thumbnail) ||
+            (opts.audio && AUDIO_TYPES.includes(m.type) && !m.audioData && !(m.duration > MAX_AUDIO_SECONDS))
+        ));
+
+        for (let i = 0; i < work.length; i++) {
+            if (signal && signal.aborted) throw new Error('Aborted');
+            if (i > 0) await abortableSleep(randomBetween(MEDIA_PACING.minMs, MEDIA_PACING.maxMs), signal);
+            const m = work[i];
+            onProgress(i + 1, 'wajs_media', work.length);
+            try {
+                const isAudio = AUDIO_TYPES.includes(m.type);
+                const res = isAudio
+                    ? await Wajs.call('wajs_media_audio', { id: m.id })
+                    : await Wajs.call('wajs_media_thumbnail', { id: m.id, maxSize: opts.maxSize || 160 });
+                if (res && res.dataUri) {
+                    if (isAudio) {
+                        m.audioData = res.dataUri;
+                        m.media.status = 'cached';
+                        stats.audio++;
+                    } else {
+                        m.thumbnail = res.dataUri;
+                        m.media.status = 'thumbnail';
+                        stats.thumbnails++;
+                    }
+                    stats.sources[res.source] = (stats.sources[res.source] || 0) + 1;
+                } else {
+                    stats.notCached++;
+                }
+            } catch (e) {
+                if (signal && signal.aborted) throw new Error('Aborted');
+                m.media.status = 'error';
+                m.media.error = e.message;
+                stats.errors++;
+            }
+        }
+        console.log(`[WA-Exporter WA-JS] Media from local caches: ${stats.thumbnails} thumbnails, ${stats.audio} audio, ${stats.notCached} not cached, ${stats.errors} errors.`);
+        return stats;
+    }
+
+    function release() {
+        const Wajs = window.WAExporter.Wajs;
+        if (!Wajs) return Promise.resolve();
+        return Wajs.call('wajs_release').catch(() => { });
+    }
+
+    window.WAExporter.WajsEngine = { run, enrichMedia, release, PACING, MEDIA_PACING, WajsUnavailable, WajsMidRunError };
 })();
