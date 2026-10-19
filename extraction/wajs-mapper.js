@@ -121,13 +121,14 @@
 
     function contentFor(kind, raw, ctx) {
         const label = LABELS[kind];
+        const caption = resolveMentions(raw.caption, raw.mentionedJidList, ctx);
         switch (kind) {
             case 'chat':
-                return raw.body || '';
+                return resolveMentions(raw.body, raw.mentionedJidList, ctx) || '';
             case 'image':
             case 'video':
             case 'gif':
-                return raw.caption ? `${label} ${raw.caption}` : label;
+                return caption ? `${label} ${caption}` : label;
             case 'audio':
             case 'ptt':
             case 'sticker':
@@ -136,7 +137,7 @@
                 return label;
             case 'document': {
                 const name = raw.filename || 'document';
-                return raw.caption && raw.caption !== name ? `${label} ${name} - ${raw.caption}` : `${label} ${name}`;
+                return raw.caption && raw.caption !== name ? `${label} ${name} - ${caption}` : `${label} ${name}`;
             }
             case 'location':
                 return `${label} ${mapsUrl(raw)}`;
@@ -158,19 +159,46 @@
         return `https://maps.google.com/?q=${raw.lat},${raw.lng}`;
     }
 
-    function quotedContent(q) {
+    function quotedContent(q, ctx) {
         if (!q) return '[Media]';
         const kind = q.type === 'poll_creation' ? 'poll' : (q.type || 'chat');
-        if (kind === 'chat') return q.body || '[Media]';
+        if (kind === 'chat') return resolveMentions(q.body, q.mentionedJidList, ctx) || '[Media]';
         const label = LABELS[kind] || '[Media]';
-        const text = q.caption || (kind === 'document' ? q.filename : null);
+        const text = resolveMentions(q.caption, q.mentionedJidList, ctx) || (kind === 'document' ? q.filename : null);
         return text ? `${label} ${text}` : label;
     }
 
     function mentionName(jid, ctx) {
+        if (!jid) return null;
         if (ctx.selfJids && ctx.selfJids.has(jid)) return 'Me';
         const p = person(jid, ctx);
         return (p && (p.name || p.pushname || p.verifiedName)) || null;
+    }
+
+    // WhatsApp stores a mention as "@<user part of the jid>" in the text and shows the name
+    // on screen. Quoted messages may lack mentionedJidList, so the token is also tried as
+    // @lid and @c.us. Unknown names keep the "@<user>" token.
+    const MENTION_TOKEN = /(?<![\w@])@(\d+)(?!\d)/g;
+
+    function mentionCandidates(text) {
+        if (typeof text !== 'string' || !text.includes('@')) return [];
+        const out = [];
+        for (const m of text.matchAll(MENTION_TOKEN)) out.push(`${m[1]}@lid`, `${m[1]}@c.us`);
+        return out;
+    }
+
+    function resolveMentions(text, jids, ctx) {
+        if (typeof text !== 'string' || !text.includes('@')) return text;
+        const byUser = new Map();
+        (jids || []).forEach(jid => {
+            const user = jidUser(jid);
+            if (user && !byUser.has(user)) byUser.set(user, jid);
+        });
+        return text.replace(MENTION_TOKEN, (token, user) => {
+            const name = mentionName(byUser.get(user), ctx) ||
+                mentionName(`${user}@lid`, ctx) || mentionName(`${user}@c.us`, ctx);
+            return name ? '@' + name : token;
+        });
     }
 
     function toInt(value) {
@@ -205,7 +233,7 @@
         if (raw.quotedMsg) {
             quotedMessage = {
                 sender: displayName(raw.quotedParticipant, null, ctx),
-                content: quotedContent(raw.quotedMsg),
+                content: quotedContent(raw.quotedMsg, ctx),
                 id: raw.quotedStanzaID || null
             };
         }
@@ -316,5 +344,5 @@
         return out;
     }
 
-    root.WAExporter.WajsMapper = { mapMessage, messageKey, mergeWithDom, kindOf, EXCLUDED_TYPES };
+    root.WAExporter.WajsMapper = { mapMessage, messageKey, mergeWithDom, kindOf, mentionCandidates, EXCLUDED_TYPES };
 })();

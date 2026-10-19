@@ -116,7 +116,8 @@
             type: projectPrimitive(q.type),
             body: projectPrimitive(q.body),
             caption: projectPrimitive(q.caption),
-            filename: projectPrimitive(q.filename)
+            filename: projectPrimitive(q.filename),
+            mentionedJidList: Array.isArray(q.mentionedJidList) ? q.mentionedJidList.map(toJid).filter(Boolean) : []
         } : null;
 
         // Field discovery for phase 0: attribute names only, never values.

@@ -32,6 +32,7 @@
     const NETWORK_TYPES = ['image', 'sticker', 'ptt', 'audio'];
     const NETWORK_DEFAULTS = { maxAgeDays: 14, maxDownloads: 30 };
     const NETWORK_MAX_AGE_LIMIT = 30;
+    const NETWORK_MAX_DOWNLOADS_LIMIT = 30;
 
     // WhatsApp launched in 2009; anything older is a broken timestamp and must not
     // drive the date-range stop.
@@ -209,6 +210,11 @@
                 add(raw.from);
                 add(raw.quotedParticipant);
                 (raw.mentionedJidList || []).forEach(add);
+                const q = raw.quotedMsg;
+                if (q) {
+                    (q.mentionedJidList || []).forEach(add);
+                    Mapper.mentionCandidates(q.body).concat(Mapper.mentionCandidates(q.caption)).forEach(add);
+                }
                 (raw.reactionRows || []).forEach(r => add(r.sender));
                 (raw.voteRows || []).forEach(v => add(v.sender));
             });
@@ -413,7 +419,7 @@
     async function downloadMissing(work, opts, signal, onProgress) {
         const Wajs = window.WAExporter.Wajs;
         const maxAgeDays = Math.min(Math.max(1, parseInt(opts.network.maxAgeDays, 10) || NETWORK_DEFAULTS.maxAgeDays), NETWORK_MAX_AGE_LIMIT);
-        const maxDownloads = Math.max(0, parseInt(opts.network.maxDownloads, 10) || NETWORK_DEFAULTS.maxDownloads);
+        const maxDownloads = Math.min(Math.max(0, parseInt(opts.network.maxDownloads, 10) || NETWORK_DEFAULTS.maxDownloads), NETWORK_MAX_DOWNLOADS_LIMIT);
         const minTimestamp = Date.now() - maxAgeDays * 86400000;
         const net = { attempted: 0, downloaded: 0, expired: 0, errors: 0, tooOld: 0, overLimit: 0, stoppedBy: null };
 

@@ -44,9 +44,10 @@ test('every key used by the popup, options page and manifest exists', () => {
 
 test('normalize: defaults, legacy engine value, clamped numbers and default dates', () => {
     const now = new Date(2026, 9, 19, 12, 30);
-    const s = Settings.normalize({ extractEngine: 'wajs', mediaMaxAgeDays: '90', maxAiRequests: 0, extractMode: 'bogus', thumbnailResolution: 160 }, now);
+    const s = Settings.normalize({ extractEngine: 'wajs', mediaMaxAgeDays: '90', maxMediaDownloads: 100, maxAiRequests: 0, extractMode: 'bogus', thumbnailResolution: 160 }, now);
     assert.equal(s.extractEngine, 'auto');
     assert.equal(s.mediaMaxAgeDays, 30, 'media age never above 30 days');
+    assert.equal(s.maxMediaDownloads, 30, 'never more than 30 downloads per export');
     assert.equal(s.maxAiRequests, 1);
     assert.equal(s.extractMode, 'count');
     assert.equal(s.thumbnailResolution, '160');

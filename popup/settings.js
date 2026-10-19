@@ -37,6 +37,7 @@
     const FORMATS = ['txt', 'json', 'csv'];
     const RESOLUTIONS = ['120', '160', '256'];
     const MEDIA_AGE_LIMIT = 30;
+    const MEDIA_DOWNLOAD_LIMIT = 30;
 
     // 'wajs' (v3.0 betas) is stored for some users; it always meant WA-JS with DOM fallback.
     function normalizeEngine(value) {
@@ -65,7 +66,7 @@
         s.thumbnailResolution = RESOLUTIONS.includes(String(s.thumbnailResolution)) ? String(s.thumbnailResolution) : DEFAULTS.thumbnailResolution;
         s.messageCount = clampInt(s.messageCount, 1, 1000000, DEFAULTS.messageCount);
         s.mediaMaxAgeDays = clampInt(s.mediaMaxAgeDays, 1, MEDIA_AGE_LIMIT, DEFAULTS.mediaMaxAgeDays);
-        s.maxMediaDownloads = clampInt(s.maxMediaDownloads, 1, 100, DEFAULTS.maxMediaDownloads);
+        s.maxMediaDownloads = clampInt(s.maxMediaDownloads, 1, MEDIA_DOWNLOAD_LIMIT, DEFAULTS.maxMediaDownloads);
         s.maxAiRequests = clampInt(s.maxAiRequests, 1, 500, DEFAULTS.maxAiRequests);
         s.geminiApiKey = String(s.geminiApiKey || '').trim();
         s.customAiPrompt = String(s.customAiPrompt || '');
