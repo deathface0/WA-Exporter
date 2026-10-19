@@ -31,6 +31,11 @@
         return res;
     }
 
+    // Remembers a WhatsApp build where the health check failed for version reasons.
+    async function markIncompatible(waVersion, reason) {
+        await browser.runtime.sendMessage({ type: 'wajs_mark_incompatible', waVersion, reason });
+    }
+
     function call(action, params = {}, timeoutMs = null) {
         return new Promise((resolve, reject) => {
             if (!ALLOWED_ACTIONS.includes(action)) return reject(new Error('Invalid action: ' + action));
@@ -56,5 +61,5 @@
         });
     }
 
-    window.WAExporter.Wajs = { ensureInjected, call };
+    window.WAExporter.Wajs = { ensureInjected, call, markIncompatible };
 })();

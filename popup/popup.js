@@ -40,7 +40,7 @@
                 'startTime', 'endTime', 'extractMode', 'exportFormat', 'messageCount',
                 'captureThumbnails', 'thumbnailResolution', 'enableAiCaptions', 'enableAiTranscription', 'geminiApiKey', 'maxAiRequests', 'advancedExpanded',
                 'aiModelPreference', 'customAiPrompt', 'promptExpanded', 'extractEngine',
-                'downloadMissingMedia', 'mediaMaxAgeDays', 'maxMediaDownloads'
+                'downloadMissingMedia', 'mediaMaxAgeDays', 'maxMediaDownloads', 'syncOlderFromPhone'
             ]);
         } catch (e) { }
 
@@ -93,6 +93,10 @@
         if (storage.downloadMissingMedia !== undefined) {
             $('toggleDownloadMedia').checked = !!storage.downloadMissingMedia;
         }
+        if (storage.syncOlderFromPhone !== undefined) {
+            $('toggleSyncOlder').checked = !!storage.syncOlderFromPhone;
+        }
+        $('syncOlderNote').style.display = $('toggleSyncOlder').checked ? 'block' : 'none';
         if (storage.mediaMaxAgeDays) {
             $('mediaMaxAgeDays').value = storage.mediaMaxAgeDays;
         }
@@ -188,6 +192,12 @@
                 invalidateCache();
             });
         }
+
+        $('toggleSyncOlder').addEventListener('change', (e) => {
+            browser.storage.local.set({ syncOlderFromPhone: e.target.checked });
+            $('syncOlderNote').style.display = e.target.checked ? 'block' : 'none';
+            invalidateCache();
+        });
 
         $('toggleDownloadMedia').addEventListener('change', (e) => {
             browser.storage.local.set({ downloadMissingMedia: e.target.checked });
@@ -369,7 +379,8 @@
             engine: $('engineSelect') ? $('engineSelect').value : 'dom',
             downloadMissingMedia: $('toggleDownloadMedia').checked,
             mediaMaxAgeDays: parseInt($('mediaMaxAgeDays').value, 10) || 14,
-            maxMediaDownloads: parseInt($('maxMediaDownloads').value, 10) || 30
+            maxMediaDownloads: parseInt($('maxMediaDownloads').value, 10) || 30,
+            syncOlderFromPhone: $('toggleSyncOlder').checked
         };
     }
 
@@ -379,6 +390,7 @@
         if (p1.mode !== p2.mode) return false;
         if ((p1.engine || 'dom') !== (p2.engine || 'dom')) return false;
         if (!!p1.downloadMissingMedia !== !!p2.downloadMissingMedia) return false;
+        if (!!p1.syncOlderFromPhone !== !!p2.syncOlderFromPhone) return false;
         if (p1.mediaMaxAgeDays !== p2.mediaMaxAgeDays || p1.maxMediaDownloads !== p2.maxMediaDownloads) return false;
         if (p1.captureThumbnails !== p2.captureThumbnails) return false;
         if (p1.thumbnailSize !== p2.thumbnailSize) return false;
@@ -551,7 +563,8 @@
                     engine: state.request.engine || 'dom',
                     downloadMissingMedia: !!state.request.downloadMissingMedia,
                     mediaMaxAgeDays: state.request.mediaMaxAgeDays,
-                    maxMediaDownloads: state.request.maxMediaDownloads
+                    maxMediaDownloads: state.request.maxMediaDownloads,
+                    syncOlderFromPhone: !!state.request.syncOlderFromPhone
                 } : getCurrentParams();
 
                 const sourceMsg = describeSource(state.result);
@@ -683,6 +696,8 @@
                     phaseEl.textContent = extra.total ? `Reading media cache (${count}/${extra.total})…` : 'Reading media cache…';
                 } else if (phase === 'wajs_media_download') {
                     phaseEl.textContent = extra.total ? `Downloading media (${count}/${extra.total})…` : 'Downloading media…';
+                } else if (phase === 'wajs_sync_older') {
+                    phaseEl.textContent = 'Loading older messages from phone…';
                 } else if (phase === 'engine_fallback') {
                     phaseEl.textContent = 'WA-JS unavailable, using DOM…';
                 } else if (phase === 'capturing_thumbnails') {
@@ -722,7 +737,8 @@
             engine: $('engineSelect') ? $('engineSelect').value : 'dom',
             downloadMissingMedia: $('toggleDownloadMedia').checked,
             mediaMaxAgeDays: parseInt($('mediaMaxAgeDays').value, 10) || 14,
-            maxMediaDownloads: parseInt($('maxMediaDownloads').value, 10) || 30
+            maxMediaDownloads: parseInt($('maxMediaDownloads').value, 10) || 30,
+            syncOlderFromPhone: $('toggleSyncOlder').checked
         };
 
         if (mode === 'date') {

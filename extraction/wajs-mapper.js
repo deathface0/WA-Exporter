@@ -277,5 +277,44 @@
         return msg;
     }
 
-    root.WAExporter.WajsMapper = { mapMessage, messageKey, kindOf, EXCLUDED_TYPES };
+    /**
+     * Merges WA-JS/IndexedDB messages (base) with DOM-scraped ones by messageKey. DOM entries
+     * replace base ones except WA-JS entries, which carry exact ids, timestamps and types.
+     * Sorted by timestamp (DOM index for ties) and trimmed to the request scope.
+     * opts.domOnlyBefore (ms): DOM entries not in base are kept only if older than this, i.e.
+     * history beyond what WA-JS covered. Inside that range they are duplicates or system
+     * entries WA-JS leaves out on purpose (the DOM engine exports pins and notices as chat).
+     */
+    function mergeWithDom(base, dom, request = {}, opts = {}) {
+        const merged = new Map();
+        let noId = 0;
+        const sig = m => m.id ? messageKey(m.id) : `no_id_${noId++}_${m.timestamp}`;
+
+        (base || []).forEach(m => merged.set(sig(m), m));
+        const cutoff = typeof opts.domOnlyBefore === 'number' ? opts.domOnlyBefore : Infinity;
+        (dom || []).forEach(m => {
+            const key = sig(m);
+            const prev = merged.get(key);
+            if (prev && prev.engine === 'wajs') return;
+            if (!prev && !(m.timestamp < cutoff)) return;
+            merged.set(key, m);
+        });
+
+        let out = Array.from(merged.values()).sort((a, b) => {
+            if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+            if (typeof a.domIndex === 'number' && typeof b.domIndex === 'number') return a.domIndex - b.domIndex;
+            return 0;
+        });
+        if (request.mode === 'date') {
+            const start = request.start || 0;
+            const end = request.end || Infinity;
+            out = out.filter(m => m.timestamp >= start && m.timestamp <= end);
+        } else if (request.mode === 'count') {
+            const count = request.count || 100;
+            if (out.length > count) out = out.slice(-count);
+        }
+        return out;
+    }
+
+    root.WAExporter.WajsMapper = { mapMessage, messageKey, mergeWithDom, kindOf, EXCLUDED_TYPES };
 })();

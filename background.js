@@ -10,14 +10,53 @@
     // Vendored WA-JS build (scripts/build-wajs.sh). Pinned after phase 0; bump only after re-running it.
     const WAJS_DEFAULT_VERSION = '4.6.1';
     const WAJS_ALLOWED_VERSIONS = ['4.6.1'];
+
+    // WhatsApp builds where the bundle failed its health check for version reasons. Keyed by
+    // WhatsApp version + bundle hash + extension version, so a rebuild or update retries.
+    const COMPAT_KEY = 'wajsCompat';
+    const COMPAT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+    async function compatKey(waVersion, version) {
+        let bundleHash = 'unknown';
+        try {
+            const res = await fetch(browser.runtime.getURL(`vendor/wa-js/${version}/VERSION.json`));
+            bundleHash = (await res.json()).sha256 || bundleHash;
+        } catch (e) { }
+        return `${waVersion}|${version}|${bundleHash.slice(0, 16)}|${browser.runtime.getManifest().version}`;
+    }
+
+    async function readCompat() {
+        const stored = await browser.storage.local.get(COMPAT_KEY);
+        const entries = (stored && stored[COMPAT_KEY]) || {};
+        const now = Date.now();
+        Object.keys(entries).forEach(k => { if (!(now - entries[k].at < COMPAT_TTL_MS)) delete entries[k]; });
+        return entries;
+    }
+
+    async function markIncompatible(waVersion, version, reason) {
+        const entries = await readCompat();
+        entries[await compatKey(waVersion, version)] = { reason: String(reason).slice(0, 200), at: Date.now() };
+        await browser.storage.local.set({ [COMPAT_KEY]: entries });
+    }
+
     async function injectWajs(tabId, version) {
         const target = { tabId };
         const [probe] = await browser.scripting.executeScript({
             target, world: 'MAIN',
-            func: () => ({ host: !!window.__waExpWajsHost, version: (window.__waExpCore && window.__waExpCore.version) || null })
+            func: () => ({
+                host: !!window.__waExpWajsHost,
+                version: (window.__waExpCore && window.__waExpCore.version) || null,
+                waVersion: (window.Debug && window.Debug.VERSION) || null
+            })
         });
         if (probe && probe.result && probe.result.host) {
             return { ok: true, alreadyInjected: true, version: probe.result.version };
+        }
+
+        const waVersion = probe && probe.result && probe.result.waVersion;
+        if (waVersion) {
+            const known = (await readCompat())[await compatKey(waVersion, version)];
+            if (known) return { ok: false, error: 'known_incompatible: ' + known.reason, knownIncompatible: true };
         }
 
         await browser.scripting.executeScript({ target, world: 'MAIN', files: [`vendor/wa-js/${version}/wa-js.bundle.js`] });
@@ -37,6 +76,19 @@
             const version = WAJS_ALLOWED_VERSIONS.includes(message.version) ? message.version : WAJS_DEFAULT_VERSION;
             injectWajs(tab.id, version)
                 .then(res => sendResponse(res))
+                .catch(err => sendResponse({ ok: false, error: err.message }));
+            return true;
+        }
+
+        if (message.type === 'wajs_mark_incompatible') {
+            const tab = sender && sender.tab;
+            if (!tab || !tab.url || !tab.url.startsWith('https://web.whatsapp.com/') ||
+                typeof message.waVersion !== 'string' || typeof message.reason !== 'string') {
+                sendResponse({ ok: false, error: 'Invalid request' });
+                return false;
+            }
+            markIncompatible(message.waVersion, WAJS_DEFAULT_VERSION, message.reason)
+                .then(() => sendResponse({ ok: true }))
                 .catch(err => sendResponse({ ok: false, error: err.message }));
             return true;
         }

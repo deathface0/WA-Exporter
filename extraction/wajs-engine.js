@@ -37,6 +37,19 @@
     // drive the date-range stop.
     const MIN_PLAUSIBLE_T = 1230768000;
 
+    // chat.endOfHistoryTransferType (WAWebChatConstants.ConversationEndOfHistoryTransferModelPropType)
+    // tells whether history older than the local cache is still on the phone.
+    function historyState(type) {
+        if (type === 1) return 'complete';
+        if (type === 0 || type === 3 || type === 4) return 'on_phone';
+        if (type === 5) return 'no_access';
+        return 'unknown'; // 2 (initial sync still incomplete) or not set
+    }
+
+    // Health failures that depend on the WhatsApp build, not on the moment: remembered so the
+    // next export goes straight to the DOM engine (background.js, wajs_mark_incompatible).
+    const VERSION_FAILURE = /^(api_missing|wa_modules_missing|shape_mismatch|unexpected_bundle)\b/;
+
     class WajsUnavailable extends Error {
         constructor(reason) {
             super('WA-JS unavailable: ' + reason);
@@ -81,31 +94,52 @@
 
     /**
      * Runs a WA-JS extraction for the active chat.
-     * Resolves to { messages, isPartial, stopReason, engine, pages, waVersion, wajsVersion }.
+     * Resolves to { messages, isPartial, stopReason, needsOlder, history, engine, pages, waVersion, wajsVersion }.
+     * needsOlder: the local cache ended before the scope was met and older history is (or may be)
+     * on the phone; the caller can let the DOM engine sync it and call run() again with
+     * `resume` (result.resume) to read the synced messages from where paging stopped.
      * Throws WajsUnavailable when WA-JS cannot be used (caller falls back to DOM),
      * or WajsMidRunError with the messages collected so far.
      * The host stays open for enrichMedia(); callers must call release() afterwards.
      */
-    async function run(request, signal, onProgress = () => { }) {
+    async function run(request, signal, onProgress = () => { }, resume = null) {
         const Wajs = window.WAExporter.Wajs;
         const Mapper = window.WAExporter.WajsMapper;
         if (!Wajs || !Mapper) throw new WajsUnavailable('client_not_loaded');
         if (request.debugForceWajsFailure === 'unavailable') throw new WajsUnavailable('debug_forced');
 
-        onProgress(0, 'wajs_loading');
-        try {
-            await Wajs.ensureInjected();
-        } catch (e) {
-            throw new WajsUnavailable('inject_failed: ' + e.message);
-        }
-
         let health;
-        try {
-            health = await Wajs.call('wajs_health', { expectedChatTitle: request.expectedChatTitle || null });
-        } catch (e) {
-            throw new WajsUnavailable('health_error: ' + e.message);
+        let historyType;
+        if (resume) {
+            health = resume.health;
+            // The DOM sync may take a while: only continue on the same chat.
+            const active = await Wajs.call('wajs_active_chat').catch(() => null);
+            if (!active || active.id !== resume.chatId) {
+                return Object.assign({}, resume.result, { olderPass: 'chat_changed' });
+            }
+            historyType = active.endOfHistoryTransferType;
+        } else {
+            onProgress(0, 'wajs_loading');
+            try {
+                await Wajs.ensureInjected();
+            } catch (e) {
+                throw new WajsUnavailable('inject_failed: ' + e.message);
+            }
+
+            try {
+                health = await Wajs.call('wajs_health', { expectedChatTitle: request.expectedChatTitle || null });
+            } catch (e) {
+                throw new WajsUnavailable('health_error: ' + e.message);
+            }
+            if (!health || !health.ok) {
+                const reason = (health && health.reason) || 'unknown';
+                if (VERSION_FAILURE.test(reason) && health.waVersion && Wajs.markIncompatible) {
+                    await Wajs.markIncompatible(health.waVersion, reason).catch(() => { });
+                }
+                throw new WajsUnavailable(reason);
+            }
+            historyType = health.chat.endOfHistoryTransferType;
         }
-        if (!health || !health.ok) throw new WajsUnavailable((health && health.reason) || 'unknown');
 
         const mode = request.mode || 'all';
         const targetCount = request.count || 100;
@@ -113,7 +147,7 @@
         const endDate = request.end || Infinity;
 
         const chatId = health.chat.id;
-        const ctx = {
+        const ctx = resume ? resume.ctx : {
             chatId,
             chatTitle: health.chat.title,
             isGroup: chatId.endsWith('@g.us'),
@@ -121,13 +155,12 @@
             people: new Map()
         };
 
-        const raws = new Map();
-        let seq = 0;
-        let anchor = null;
-        let pages = 0;
+        const raws = resume ? resume.raws : new Map();
+        let anchor = resume ? resume.anchor : null;
+        let pages = resume ? resume.pages : 0;
         let errors = 0;
         let stopReason = null;
-        let oldestT = Infinity;
+        let oldestT = resume ? resume.oldestT : Infinity;
 
         function collect() {
             const ordered = Array.from(raws.values()).sort((a, b) => (a.raw.t - b.raw.t) || (a.seq - b.seq));
@@ -287,21 +320,39 @@
         }
 
         const messages = collect();
+        const history = historyState(historyType);
+        const atBoundary = stopReason === 'local_cache_boundary';
+        const scopeUnmet = mode === 'count' ? messages.length < targetCount
+            : mode === 'date' ? !(oldestT * 1000 < startDate)
+                : true;
         let isPartial = stopReason === 'aborted';
         if (mode === 'count' && messages.length < targetCount) isPartial = true;
         if (mode === 'date' && !(oldestT * 1000 < startDate)) isPartial = true;
+        if (mode === 'all' && atBoundary && history !== 'complete') isPartial = true;
+        // Only one sync round per export; 'no_access' history cannot be fetched at all.
+        const needsOlder = !resume && stopReason !== 'aborted' && (
+            (atBoundary && scopeUnmet && (history === 'on_phone' || history === 'unknown')) ||
+            request.debugForceOlder === true);
 
-        console.log(`[WA-Exporter WA-JS] ${messages.length} messages in ${pages} pages (stop: ${stopReason}${isPartial ? ', partial' : ''}).`);
+        console.log(`[WA-Exporter WA-JS] ${messages.length} messages in ${pages} pages (stop: ${stopReason}, history: ${history}${isPartial ? ', partial' : ''}${needsOlder ? ', needs older' : ''}${resume ? ', resumed' : ''}).`);
 
-        return {
+        const result = {
             messages,
             isPartial,
             stopReason,
+            needsOlder,
+            history,
             engine: 'wajs',
             pages,
             waVersion: health.waVersion,
             wajsVersion: health.wajsVersion
         };
+        // In-memory paging state for a resumed run; never serialized.
+        Object.defineProperty(result, 'resume', {
+            enumerable: false,
+            value: { health, chatId, ctx, raws, anchor, pages, oldestT, result }
+        });
+        return result;
     }
 
     /**

@@ -79,7 +79,10 @@
         return {
             id: toJid(chat.id),
             title: chat.formattedTitle || chat.name || null,
-            isGroup: !!chat.isGroup
+            isGroup: !!chat.isGroup,
+            // WAWebChatConstants.ConversationEndOfHistoryTransferModelPropType: whether older
+            // history is still on the phone (0, 3, 4), unreachable (5), complete (1) or pending (2).
+            endOfHistoryTransferType: projectPrimitive(chat.endOfHistoryTransferType)
         };
     }
 

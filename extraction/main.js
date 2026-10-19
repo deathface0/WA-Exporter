@@ -53,6 +53,94 @@
         } catch (e) { }
     }
 
+    /**
+     * WA-JS only reads the local cache. When older history is still on the phone, the DOM
+     * engine scrolls up and taps WhatsApp's "older messages" notice (what the user would do),
+     * then WA-JS resumes paging to read the synced messages exactly. DOM entries only fill
+     * what WA-JS still cannot see. Errors keep the first WA-JS result.
+     */
+    // Chats where a phone sync brought nothing, keyed by chat + oldest local message:
+    // WhatsApp keeps offering the phone notice, so later exports skip it for a while.
+    const OLDER_SYNC_KEY = 'olderSyncExhausted';
+    const OLDER_SYNC_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+    async function readExhausted() {
+        try {
+            const stored = await browser.storage.local.get(OLDER_SYNC_KEY);
+            const entries = (stored && stored[OLDER_SYNC_KEY]) || {};
+            const now = Date.now();
+            Object.keys(entries).forEach(k => { if (!(now - entries[k] < OLDER_SYNC_TTL_MS)) delete entries[k]; });
+            return entries;
+        } catch (e) {
+            return {};
+        }
+    }
+
+    async function syncOlderHistory(wajsRes, request, signal, onWajsProgress) {
+        const Engine = window.WAExporter.WajsEngine;
+        const Mapper = window.WAExporter.WajsMapper;
+        const Scroller = window.WAExporter.Scroller;
+        if (!Scroller) return wajsRes;
+
+        // Opt-in (popup: "Load older messages from phone"): it scrolls the chat and asks the phone.
+        if (request.syncOlderFromPhone !== true && request.debugForceOlder !== true) {
+            return Object.assign({}, wajsRes, { olderSync: { skipped: 'disabled', history: wajsRes.history } });
+        }
+        const exhaustedKey = `${wajsRes.resume.chatId}|${wajsRes.resume.anchor}`;
+        const exhausted = await readExhausted();
+        if (exhausted[exhaustedKey] && request.debugForceOlder !== true) {
+            console.log('[WA-Exporter] Older-history sync skipped: the last one for this chat brought nothing.');
+            // Same outcome as that sync: for "all", the chat start was already reached.
+            const isPartial = (request.mode || 'all') === 'all' ? false : wajsRes.isPartial;
+            return Object.assign({}, wajsRes, { isPartial, olderSync: { skipped: 'exhausted', history: wajsRes.history } });
+        }
+
+        window.WAExporter.State.progress = { count: wajsRes.messages.length, phase: 'wajs_sync_older', source: 'dom' };
+        broadcastProgress(wajsRes.messages.length, 'wajs_sync_older', 'dom');
+
+        let scrollResult;
+        try {
+            // The scroller expects the view at the newest message.
+            const container = window.WAExporter.findScrollContainer && window.WAExporter.findScrollContainer();
+            if (container) container.scrollTop = container.scrollHeight;
+            scrollResult = await Scroller.startExtraction(Object.assign({}, request, { maxPhoneSyncClicks: 1 }));
+        } catch (err) {
+            if (signal.aborted) throw new Error('Aborted');
+            console.warn('[WA-Exporter] Older-history sync via DOM failed, keeping WA-JS result:', err.message);
+            return Object.assign({}, wajsRes, { olderSync: { error: err.message, history: wajsRes.history } });
+        }
+        if (signal.aborted) throw new Error('Aborted');
+
+        const resumed = await Engine.run(request, signal, onWajsProgress, wajsRes.resume);
+        if (resumed.olderPass === 'chat_changed') {
+            // The DOM messages belong to whatever chat is open now: never merge them.
+            console.warn('[WA-Exporter] Chat changed during older-history sync, keeping WA-JS result.');
+            return Object.assign({}, wajsRes, { olderSync: { chatChanged: true, history: wajsRes.history } });
+        }
+        const domMessages = scrollResult.messages || [];
+        // Oldest timestamp WA-JS saw (any type): the DOM only adds history before it.
+        const oldestT = resumed.resume && resumed.resume.oldestT;
+        const merged = Mapper.mergeWithDom(resumed.messages, domMessages, request,
+            { domOnlyBefore: Number.isFinite(oldestT) ? oldestT * 1000 : Infinity });
+        const wajsCount = merged.filter(m => m.engine === 'wajs').length;
+        if (resumed.messages.length === wajsRes.messages.length && merged.length === wajsCount) {
+            exhausted[exhaustedKey] = Date.now();
+            try { await browser.storage.local.set({ [OLDER_SYNC_KEY]: exhausted }); } catch (e) { }
+        }
+        console.log(`[WA-Exporter] Older-history sync: ${resumed.messages.length - wajsRes.messages.length} more from WA-JS, ${merged.length - wajsCount} DOM-only.`);
+        return Object.assign({}, resumed, {
+            messages: merged,
+            isPartial: resumed.isPartial && scrollResult.isPartial !== false,
+            olderSync: {
+                firstPass: wajsRes.messages.length,
+                secondPass: resumed.messages.length,
+                domMessages: merged.length - wajsCount,
+                domPartial: !!scrollResult.isPartial,
+                history: resumed.history
+            }
+        });
+    }
+
     function isIconOrNoiseText(text) {
         if (!text) return true;
         const lower = text.toLowerCase().trim();
@@ -187,6 +275,9 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                         let wajsRes;
                         try {
                             wajsRes = await Engine.run(request, signal, onWajsProgress);
+                            if (wajsRes.needsOlder) {
+                                wajsRes = await syncOlderHistory(wajsRes, request, signal, onWajsProgress);
+                            }
                             // Local media caches only; release the host before any AI calls.
                             await Engine.enrichMedia(wajsRes.messages, {
                                 thumbnails: request.captureThumbnails !== false || !!(request.enableAiCaptions && request.geminiApiKey),
@@ -205,10 +296,11 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                         if (signal.aborted) throw new Error("Aborted");
                         const res = {
                             data: processedMessages,
-                            source: 'wajs',
+                            source: wajsRes.olderSync && wajsRes.olderSync.domMessages ? 'wajs+dom' : 'wajs',
                             engine: 'wajs',
                             isPartial: wajsRes.isPartial,
                             stopReason: wajsRes.stopReason,
+                            olderSync: wajsRes.olderSync || null,
                             fallbackReason: null,
                             waVersion: wajsRes.waVersion,
                             wajsVersion: wajsRes.wajsVersion
@@ -299,50 +391,7 @@ window.WAExporter.State.chatName = currentTitle || window.WAExporter.State.chatN
                             const scrollResult = await window.WAExporter.Scroller.startExtraction(request);
                             const domMessages = scrollResult.messages || [];
                             
-                            // Merge by ID, keeping unique items safely
-                            const mergedMap = new Map();
-                            let fallbackIdCounter = 0;
-                            const keyOf = window.WAExporter.WajsMapper ? window.WAExporter.WajsMapper.messageKey : (id => id);
-                            const getSig = (m) => m.id ? keyOf(m.id) : `no_id_${fallbackIdCounter++}_${m.timestamp}`;
-                            
-                            // Insert IDB messages first
-                            idbMessages.forEach(m => {
-                                mergedMap.set(getSig(m), m);
-                            });
-                            // Override/merge with DOM messages (they might have better thumbnails/current state)
-                            domMessages.forEach(m => {
-                                // If we don't have an ID, we don't overwrite IDB messages, we just append them.
-                                const sig = getSig(m);
-                                // WA-JS entries carry exact timestamps and full ids; never replace them with DOM parses.
-                                const prev = mergedMap.get(sig);
-                                if (prev && prev.engine === 'wajs') return;
-                                mergedMap.set(sig, m);
-                            });
-
-                            let merged = Array.from(mergedMap.values());
-                            
-                            // Preserve domIndex sorting for ties
-                            merged.sort((a, b) => {
-                                if (a.timestamp !== b.timestamp) {
-                                    return a.timestamp - b.timestamp;
-                                }
-                                if (typeof a.domIndex === 'number' && typeof b.domIndex === 'number') {
-                                    return a.domIndex - b.domIndex;
-                                }
-                                return 0;
-                            });
-
-                            // Re-apply filters on merged data
-                            if (request.mode === 'date') {
-                                const start = request.start || 0;
-                                const end = request.end || Infinity;
-                                merged = merged.filter(m => m.timestamp >= start && m.timestamp <= end);
-                            } else if (request.mode === 'count') {
-                                const count = request.count || 100;
-                                if (merged.length > count) {
-                                    merged = merged.slice(-count);
-                                }
-                            }
+                            const merged = window.WAExporter.WajsMapper.mergeWithDom(idbMessages, domMessages, request);
 
                             const processedMessages = await runMediaAndAiPipeline(merged, request);
                             if (window.WAExporter.State.abortController && window.WAExporter.State.abortController.signal.aborted) throw new Error("Aborted");

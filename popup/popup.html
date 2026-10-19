@@ -100,6 +100,16 @@
 
             <div class="setting-row sub-toggle" style="margin-top: 8px;">
                 <label class="switch-label">
+                    <input type="checkbox" id="toggleSyncOlder">
+                    <span class="switch-text">Load older messages from phone (WA-JS)</span>
+                </label>
+            </div>
+            <p id="syncOlderNote" class="privacy-note" style="display: none;">
+                ⚠️ When the local cache ends before the selected range, the chat is scrolled and WhatsApp's "older messages from your phone" notice is tapped once. Off: the export only covers the local cache and is marked partial.
+            </p>
+
+            <div class="setting-row sub-toggle" style="margin-top: 8px;">
+                <label class="switch-label">
                     <input type="checkbox" id="toggleDownloadMedia">
                     <span class="switch-text">Download missing media (WA-JS)</span>
                 </label>

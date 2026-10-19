@@ -17,7 +17,9 @@ function makeHistory(n = 100) {
     }));
 }
 
-function setup({ history = makeHistory(), health = null, failFrom = Infinity, addons = null, people = null } = {}) {
+// local.from: index of the oldest message in WhatsApp's local cache (older ones are "on the phone").
+function setup({ history = makeHistory(), health = null, failFrom = Infinity, addons = null, people = null,
+    historyType = 1, local = { from: 0 }, activeChat = null } = {}) {
     const W = loadScripts('extraction/wajs-mapper.js', 'extraction/wajs-engine.js');
     Object.assign(W.WajsEngine.PACING, { pauseMinMs: 0, pauseMaxMs: 0, longPauseMinMs: 0, longPauseMaxMs: 0 });
     Object.assign(W.WajsEngine.MEDIA_PACING, { minMs: 0, maxMs: 0 });
@@ -26,10 +28,14 @@ function setup({ history = makeHistory(), health = null, failFrom = Infinity, ad
     Object.assign(W.WajsEngine.ADDON_PACING, { minMs: 0, maxMs: 0 });
     W.Wajs = {
         ensureInjected: async () => ({ ok: true }),
+        markIncompatible: async (waVersion, reason) => { calls.push({ action: 'mark_incompatible', params: { waVersion, reason } }); },
         call: async (action, params) => {
             calls.push({ action, params });
             if (action === 'wajs_health') {
-                return health || { ok: true, chat: { id: GROUP, title: 'G' }, waVersion: 'wa', wajsVersion: '4.6.1' };
+                return health || { ok: true, chat: { id: GROUP, title: 'G', endOfHistoryTransferType: historyType }, waVersion: 'wa', wajsVersion: '4.6.1' };
+            }
+            if (action === 'wajs_active_chat') {
+                return activeChat || { id: GROUP, title: 'G', endOfHistoryTransferType: historyType };
             }
             if (action === 'wajs_release') return { released: true };
             if (action === 'wajs_addons') {
@@ -57,7 +63,7 @@ function setup({ history = makeHistory(), health = null, failFrom = Infinity, ad
             if (action === 'wajs_get_messages') {
                 if (calls.filter(c => c.action === 'wajs_get_messages').length > failFrom) throw new Error('boom');
                 const end = params.id ? history.findIndex(m => m.id === params.id) : history.length;
-                return history.slice(Math.max(0, end - params.count), end);
+                return history.slice(Math.max(local.from, end - params.count), Math.max(local.from, end));
             }
             throw new Error('unexpected ' + action);
         }
@@ -295,4 +301,72 @@ test('abort skips the contact name lookup', async () => {
     assert.equal(res.stopReason, 'aborted');
     assert.equal(res.isPartial, true);
     assert.ok(!calls.some(c => c.action === 'wajs_people'));
+});
+
+test('older history: needsOlder only when the cache ends before the scope and the phone has more', async () => {
+    const local = { from: 60 };
+    let { W } = setup({ historyType: 0, local });
+    let res = await W.WajsEngine.run({ mode: 'count', count: 60 }, null);
+    assert.equal(res.stopReason, 'local_cache_boundary');
+    assert.equal(res.history, 'on_phone');
+    assert.equal(res.needsOlder, true);
+    assert.equal(res.isPartial, true);
+    assert.equal(JSON.parse(JSON.stringify(res)).resume, undefined, 'resume state is never serialized');
+
+    ({ W } = setup({ historyType: 1, local: { from: 60 } }));
+    res = await W.WajsEngine.run({ mode: 'all' }, null);
+    assert.equal(res.history, 'complete');
+    assert.equal(res.needsOlder, false);
+    assert.equal(res.isPartial, false, 'all + complete history is not partial');
+
+    ({ W } = setup({ historyType: 5, local: { from: 60 } }));
+    res = await W.WajsEngine.run({ mode: 'all' }, null);
+    assert.equal(res.needsOlder, false, 'no access: nothing to sync');
+    assert.equal(res.isPartial, true);
+
+    ({ W } = setup({ historyType: 0 }));
+    res = await W.WajsEngine.run({ mode: 'count', count: 30 }, null);
+    assert.equal(res.needsOlder, false, 'scope met from the local cache');
+    res = await W.WajsEngine.run({ mode: 'count', count: 30, debugForceOlder: true }, null);
+    assert.equal(res.needsOlder, true);
+});
+
+test('older history: a resumed run continues from the last anchor and reads the synced messages', async () => {
+    const local = { from: 60 };
+    const { W, calls } = setup({ historyType: 0, local });
+    const first = await W.WajsEngine.run({ mode: 'all' }, null);
+    assert.equal(first.messages.length, 39);
+    assert.equal(first.needsOlder, true);
+
+    local.from = 0; // the DOM engine synced the rest from the phone
+    const before = calls.filter(c => c.action === 'wajs_get_messages').length;
+    const second = await W.WajsEngine.run({ mode: 'all' }, null, () => { }, first.resume);
+    const resumedPages = calls.filter(c => c.action === 'wajs_get_messages').slice(before);
+    assert.equal(resumedPages[0].params.id, `true_${GROUP}_M0060_${SELF}`, 'resumes before the oldest anchor');
+    assert.ok(!calls.slice(before).some(c => c.action === 'wajs_health'), 'no second injection or health check');
+    assert.equal(second.messages.length, 96);
+    assert.equal(second.needsOlder, false, 'one sync round only');
+    const ids = second.messages.map(m => m.id);
+    assert.equal(new Set(ids).size, ids.length);
+    const ts = plain(second.messages.map(m => m.timestamp));
+    assert.deepEqual(ts, [...ts].sort((a, b) => a - b));
+});
+
+test('older history: a resumed run on another chat returns the first result untouched', async () => {
+    const { W } = setup({ historyType: 0, local: { from: 60 }, activeChat: { id: 'other@g.us', title: 'X' } });
+    const first = await W.WajsEngine.run({ mode: 'all' }, null);
+    const second = await W.WajsEngine.run({ mode: 'all' }, null, () => { }, first.resume);
+    assert.equal(second.olderPass, 'chat_changed');
+    assert.equal(second.messages.length, first.messages.length);
+});
+
+test('version failures are remembered, transient ones are not', async () => {
+    for (const [reason, remembered] of [['wa_modules_missing:chats', true], ['api_missing:chat.getMessages', true],
+        ['shape_mismatch', true], ['chat_mismatch', false], ['not_ready', false], ['no_active_chat', false]]) {
+        const { W, calls } = setup({ health: { ok: false, reason, waVersion: '2.3000.1' } });
+        await assert.rejects(W.WajsEngine.run({ mode: 'all' }, null), { name: 'WajsUnavailable', reason });
+        const marks = calls.filter(c => c.action === 'mark_incompatible');
+        assert.equal(marks.length, remembered ? 1 : 0, reason);
+        if (remembered) assert.deepEqual(marks[0].params, { waVersion: '2.3000.1', reason });
+    }
 });

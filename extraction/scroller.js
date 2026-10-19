@@ -279,6 +279,14 @@
         const targetCount = options.count || 100;
         const startDate = options.start || 0;
         const endDate = options.end || Infinity;
+        // Each tap on "older messages from your phone" asks the phone for history.
+        const maxPhoneSyncClicks = Number.isInteger(options.maxPhoneSyncClicks) ? options.maxPhoneSyncClicks : Infinity;
+        let phoneSyncClicks = 0;
+        const tapPhoneSync = () => {
+            if (phoneSyncClicks >= maxPhoneSyncClicks || !checkAndClickLoadOlderMessages()) return false;
+            phoneSyncClicks++;
+            return true;
+        };
 
         const messageMap = new Map();
         const contextState = {
@@ -361,7 +369,7 @@
             }
 
             if (scrollContainer.scrollTop <= 20) {
-                if (checkAndClickLoadOlderMessages()) {
+                if (tapPhoneSync()) {
                     console.log('%c[WA-Exporter] 📱 Phone sync button detected & clicked! Waiting for older batch from phone...', 'color: #0288d1; font-weight: bold;');
                     reportProgress('syncing_phone');
                     await sleep(2500);
@@ -403,7 +411,7 @@
                     console.warn(`[WA-Exporter] ⏳ Waiting at top of viewport (attempt ${consecutiveNoNewMessages}/${maxRetries}) for WhatsApp to render older chunk...`);
                     if (consecutiveNoNewMessages >= maxRetries) {
                         // Final check before terminating
-                        if (checkAndClickLoadOlderMessages()) {
+                        if (tapPhoneSync()) {
                             console.log('%c[WA-Exporter] 📱 Phone sync button clicked on final retry! Waiting...', 'color: #0288d1;');
                             reportProgress('syncing_phone');
                             await sleep(2500);

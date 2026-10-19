@@ -184,6 +184,32 @@ test('poll votes fill options and the "(N votes)" content like the DOM engine', 
     assert.deepEqual(m.poll.options[1].voters.map(v => v.name), ['Ana Contact', 'Me']);
 });
 
+test('mergeWithDom: WA-JS wins on the same key, DOM fills gaps, sorted and trimmed to scope', () => {
+    const wajs = [
+        { id: `true_${GROUP}_K2_${SELF}`, timestamp: 2000, engine: 'wajs', content: 'exact' },
+        { id: `true_${GROUP}_K3_${SELF}`, timestamp: 3000, engine: 'wajs', content: 'c' }
+    ];
+    const dom = [
+        { id: 'K2', timestamp: 2500, content: 'dom parse' },
+        { id: 'K1', timestamp: 1000, content: 'older from phone', domIndex: 0 },
+        { timestamp: 500, content: 'no id' }
+    ];
+    const all = WajsMapper.mergeWithDom(wajs, dom, { mode: 'all' });
+    assert.deepEqual(plain(all.map(m => m.content)), ['no id', 'older from phone', 'exact', 'c']);
+    const last2 = WajsMapper.mergeWithDom(wajs, dom, { mode: 'count', count: 2 });
+    assert.deepEqual(plain(last2.map(m => m.content)), ['exact', 'c']);
+    const range = WajsMapper.mergeWithDom(wajs, dom, { mode: 'date', start: 900, end: 2100 });
+    assert.deepEqual(plain(range.map(m => m.content)), ['older from phone', 'exact']);
+    const idb = [{ id: 'false_x@c.us_K9', timestamp: 9, content: 'idb' }];
+    assert.equal(WajsMapper.mergeWithDom(idb, [{ id: 'K9', timestamp: 9, content: 'dom' }], {})[0].content, 'dom',
+        'non-WA-JS base entries are still replaced by the DOM, as before');
+
+    const pin = { id: 'PIN1', timestamp: 2600, type: 'chat', content: 'You pinned a message' };
+    const synced = WajsMapper.mergeWithDom(wajs, dom.concat([pin]), { mode: 'all' }, { domOnlyBefore: 2000 });
+    assert.deepEqual(plain(synced.map(m => m.content)), ['no id', 'older from phone', 'exact', 'c'],
+        'DOM-only entries inside the WA-JS range are dropped, older ones kept');
+});
+
 test('messageKey matches WA-JS/IndexedDB ids with bare DOM data-ids', () => {
     assert.equal(WajsMapper.messageKey(`true_${GROUP}_3EB0ABCDEF_${SELF}`), '3EB0ABCDEF');
     assert.equal(WajsMapper.messageKey('false_34600000000@c.us_3EB0ABCDEF'), '3EB0ABCDEF');
