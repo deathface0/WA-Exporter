@@ -83,6 +83,16 @@ test('media body that is not a JPEG is never used as text or thumbnail', () => {
     assert.equal(img.thumbnail, null);
 });
 
+test('view-once placeholders WhatsApp shows (ciphertext) are exported, other ciphertext is not', () => {
+    const placeholder = raw({ type: 'ciphertext', subtype: 'view_once_unavailable_fanout' });
+    assert.equal(WajsMapper.isExcluded(placeholder), false);
+    const m = WajsMapper.mapMessage(placeholder, ctxGroup());
+    assert.equal(m.type, 'view_once');
+    assert.equal(m.content, '[View Once Message]');
+    assert.equal(WajsMapper.mapMessage(raw({ type: 'ciphertext' }), ctxGroup()), null);
+    assert.equal(WajsMapper.isExcluded(raw({ type: 'call_log' })), true);
+});
+
 test('location, contact, poll, revoked and view once', () => {
     const loc = WajsMapper.mapMessage(raw({ type: 'location', lat: 1.5, lng: -2.5 }), ctxGroup());
     assert.equal(loc.content, '[Location] https://maps.google.com/?q=1.5,-2.5');

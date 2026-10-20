@@ -25,6 +25,13 @@
     // Network download policy (phase 3b): only recent media, never past WhatsApp's re-upload horizon.
     const DEFAULT_MAX_AGE_DAYS = 14;
     const MAX_AGE_DAYS_LIMIT = 30;
+    // A CDN URL is only requested with this much validity left: past its `oe` expiry the CDN
+    // answers 403. Only the message's own URL is known here: WhatsApp may download through
+    // another message with the same file (stickers reuse the original upload).
+    const URL_EXPIRY_MARGIN_S = 3600;
+    // mediaData.mediaStage while WhatsApp is still fetching/decrypting (WAWebMediaTypes.MediaDataStage).
+    const IN_PROGRESS_STAGE = /^(FETCHING|DECRYPTING)$/;
+    const IN_PROGRESS_WAIT_MS = 8000;
     // Base64 signatures of image payloads found in thumbnail fields.
     const IMAGE_PREFIXES = { '/9j/': 'image/jpeg', 'iVBOR': 'image/png', 'UklGR': 'image/webp' };
 
@@ -36,6 +43,19 @@
         'latestEditSenderTimestampMs', 'hasReaction', 'star', 'ack'
     ];
     const JID_FIELDS = ['from', 'to', 'author', 'quotedParticipant', 'quotedRemoteJid'];
+
+    // id -> { expiresAt: CDN URL expiry (s) or null, type }, from messages already listed.
+    // Only the expiry number is kept: the URL itself carries access tokens.
+    const mediaUrls = new Map();
+
+    function urlExpiry(msg) {
+        for (const field of ['directPath', 'deprecatedMms3Url', 'clientUrl']) {
+            const value = msg[field];
+            const m = typeof value === 'string' && value.match(/[?&]oe=([0-9A-Fa-f]{6,10})(?:&|$)/);
+            if (m) return parseInt(m[1], 16);
+        }
+        return null;
+    }
 
     // WhatsApp's own toString() yields the serialized id; `_serialized` is not populated
     // on current builds (WA-JS' MsgKey prototype patch is excluded from the bundle).
@@ -110,6 +130,9 @@
             : null;
         out.latestEditMsgKey = toJid(msg.latestEditMsgKey);
         out.hasMediaData = !!msg.mediaData;
+        if (out.id && (out.hasMediaData || out.type === 'sticker')) {
+            mediaUrls.set(out.id, { expiresAt: urlExpiry(msg), type: out.type });
+        }
 
         const q = msg.quotedMsg;
         out.quotedMsg = q ? {
@@ -331,14 +354,36 @@
         return { dataUri: await blobToDataUri(cached.blob), source: 'cache:' + cached.source, size: cached.blob.size };
     }
 
-    // Same call as WhatsApp's "Download" button, for media not in any local cache.
+    // Same call as WhatsApp's auto-download (never a re-upload request), for media not in any local cache.
     // want: 'thumbnail' (images/stickers) or 'audio' (voice notes).
     async function mediaDownload(id, want, maxSize, maxAgeDays) {
+        const url = mediaUrls.get(id);
+        if (url && url.expiresAt !== null && url.expiresAt < Date.now() / 1000 + URL_EXPIRY_MARGIN_S) {
+            return { status: 'expired', reason: 'url_expired', skipped: true };
+        }
+        if (!url || (url.expiresAt === null && url.type === 'sticker')) {
+            return { status: 'not_downloaded', reason: 'url_expiry_unknown', skipped: true };
+        }
         const res = await core.media.download(id, { maxAgeSeconds: maxAgeDays * 86400 });
         if (res.skipped) return { status: 'not_downloaded', reason: res.skipped };
+        // A 403 also leaves the stage at FETCHING, but downloadMedia() rejects with MediaNotFoundError.
+        if (!res.cachedAfter && !res.error && IN_PROGRESS_STAGE.test(String(res.stageAfter || ''))) {
+            // downloadMedia() can resolve before decryption ends.
+            const started = Date.now();
+            while (Date.now() - started < IN_PROGRESS_WAIT_MS) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                if ((await core.media.getCached(id)).source) {
+                    res.cachedAfter = true;
+                    break;
+                }
+            }
+            // The request itself went through (no expiry involved): not a reason to stop.
+            if (!res.cachedAfter) return { status: 'not_downloaded', reason: 'decrypt_pending:' + res.stageAfter };
+        }
         if (!res.cachedAfter) {
-            // A 403 from the CDN leaves the media in REUPLOADING: WhatsApp asked the sender to re-upload.
-            const expired = res.stageAfter === 'REUPLOADING' || /MISSING|EXPIRED|GONE|403|404|410/i.test(String(res.error || res.stageAfter || ''));
+            // A 403 from the CDN fails with MediaNotFoundError (auto-download call: no re-upload
+            // request). REUPLOADING would mean WhatsApp asked the sender to re-upload.
+            const expired = res.stageAfter === 'REUPLOADING' || /MISSING|EXPIRED|GONE|NOT_?FOUND|403|404|410/i.test(String(res.error || res.stageAfter || ''));
             return { status: expired ? 'expired' : 'error', reason: res.error || res.stageAfter || 'not_cached_after_download' };
         }
         const out = want === 'audio' ? await mediaAudio(id) : await mediaThumbnail(id, maxSize);
@@ -348,6 +393,7 @@
 
     function release() {
         core.chat.reset();
+        mediaUrls.clear();
         try { delete window.__waExpCore; } catch (e) { }
         return { released: true, globalRemoved: !('__waExpCore' in window) };
     }

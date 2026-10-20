@@ -32,6 +32,15 @@
         'album'
     ]);
 
+    // A view-once message this device cannot open arrives as ciphertext; WhatsApp still shows
+    // it in the chat (and the DOM engine exports it as [View Once Message]).
+    const VIEW_ONCE_PLACEHOLDER = 'view_once_unavailable_fanout';
+
+    function isExcluded(raw) {
+        if (raw.type === 'ciphertext' && raw.subtype === VIEW_ONCE_PLACEHOLDER) return false;
+        return EXCLUDED_TYPES.has(raw.type);
+    }
+
     // WhatsApp groups reactions by emoji regardless of skin tone.
     const SKIN_TONES = /[\u{1F3FB}-\u{1F3FF}]/gu;
 
@@ -39,7 +48,7 @@
     const THUMBNAIL_KINDS = new Set(['image', 'video', 'gif']);
 
     function kindOf(raw) {
-        if (raw.isViewOnce) return 'view_once';
+        if (raw.isViewOnce || (raw.type === 'ciphertext' && raw.subtype === VIEW_ONCE_PLACEHOLDER)) return 'view_once';
         if (raw.type === 'video' && raw.isGif) return 'gif';
         if (raw.type === 'poll_creation') return 'poll';
         if (raw.type === 'multi_vcard') return 'vcard';
@@ -213,7 +222,7 @@
      */
     function mapMessage(raw, ctx) {
         if (!raw || !raw.id || typeof raw.t !== 'number') return null;
-        if (EXCLUDED_TYPES.has(raw.type)) return null;
+        if (isExcluded(raw)) return null;
 
         const kind = kindOf(raw);
         const senderId = raw.fromMe
@@ -344,5 +353,5 @@
         return out;
     }
 
-    root.WAExporter.WajsMapper = { mapMessage, messageKey, mergeWithDom, kindOf, mentionCandidates, EXCLUDED_TYPES };
+    root.WAExporter.WajsMapper = { mapMessage, messageKey, mergeWithDom, kindOf, mentionCandidates, isExcluded, EXCLUDED_TYPES };
 })();

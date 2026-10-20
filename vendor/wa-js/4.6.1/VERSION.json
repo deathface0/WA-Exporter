@@ -5,8 +5,8 @@
   "commit": "4b24c7c1e9538c41a6c3db78b49a73650d87924c",
   "globalName": "__waExpCore",
   "flavor": "wa-exporter-minimal",
-  "entrySha256": "a27099b4726a5f5efcaeac8deb35599ab52810bf35715df1e142d58f24a9124b",
+  "entrySha256": "9a082a75b7de53dedc6a7ecf7d6398b9e2895575c32f9a6bad9db5c969b0bd3c",
   "supportedWhatsappWeb": ">=2.3000.1038792969-alpha",
-  "sha256": "b04fc677553fdd0173ba0797974d1e61b09d3d6d89a7b591f9551151e6536c9b",
-  "builtWith": "node v22.23.2, npm 12.0.2"
+  "sha256": "09b207f8ff9d816f92036198b59e802680b9895951fc748cd2c74f9f343c14ef",
+  "builtWith": "node v26.11.1, npm 12.2.0"
 }

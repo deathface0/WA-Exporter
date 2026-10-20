@@ -247,10 +247,13 @@ async function info(id: string): Promise<any> {
 }
 
 /**
- * Network download, same call as WhatsApp's own "Download" button (WAWebMediaStage.react)
- * and upstream downloadMedia(). Only reachable through the gated wajs_media_download action.
- * Media older than maxAgeSeconds is never requested: once expired on the CDN (403),
- * WhatsApp asks the sender's phone to re-upload it (stage REUPLOADING).
+ * Network download, same call as WhatsApp's own auto-download queue
+ * (WAWebMediaAutoDownloadQueue), i.e. what scrolling the chat triggers. Only reachable
+ * through the gated wajs_media_download action. In WAWebMediaMmsV4Download.downloadMedia,
+ * downloadEvenIfExpensive is what allows asking the sender's phone to re-upload expired
+ * media (RMR, stage REUPLOADING) on a 403, a hash mismatch or a missing entry; with false
+ * a 403 just fails. The "Download" button and upstream downloadMedia() pass true.
+ * Media older than maxAgeSeconds is never requested.
  * Uses the live model when loaded, otherwise a detached MsgModel built from the database row.
  */
 async function download(id: string, opts: { maxAgeSeconds: number }): Promise<any> {
@@ -266,7 +269,8 @@ async function download(id: string, opts: { maxAgeSeconds: number }): Promise<an
   const stageBefore = model.mediaData ? String(model.mediaData.mediaStage || '') || null : null;
   let error: string | null = null;
   try {
-    await model.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1, isUserInitiated: true });
+    // rmrReason 0 = WEBC_RMR_REASON_CODE.OTHER, as in the auto-download queue.
+    await model.downloadMedia({ downloadEvenIfExpensive: false, rmrReason: 0, isUserInitiated: false, isAutoDownload: true });
   } catch (e: any) {
     error = (e && (e.code || e.name || e.message)) || 'download_failed';
   }
