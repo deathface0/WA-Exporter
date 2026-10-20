@@ -53,6 +53,7 @@ function setup({ history = makeHistory(), health = null, failFrom = Infinity, ad
             if (action === 'wajs_media_download') {
                 if (params.allowNetwork !== true) throw new Error('Network download not allowed');
                 if (params.id.startsWith('expired')) return { status: 'expired', reason: 'REUPLOADING' };
+                if (params.id.startsWith('stale')) return { status: 'expired', reason: 'url_expired', skipped: true };
                 return params.want === 'audio'
                     ? { status: 'cached', dataUri: 'data:audio/ogg;base64,NET', source: 'network' }
                     : { status: 'thumbnail', dataUri: 'data:image/webp;base64,NET', source: 'network' };
@@ -223,6 +224,24 @@ test('network tier downloads recent missing media, newest first, within the cap'
     assert.equal(stats.network.downloaded, 2);
 });
 
+test('network tier: items skipped before requesting (expired CDN URL) neither stop nor count as errors', async () => {
+    const { W, calls } = setup();
+    const now = Date.now();
+    const msgs = [
+        mediaMsg('miss-a', 'image', { timestamp: now - 3 * DAY }),
+        mediaMsg('stale-sticker', 'sticker', { timestamp: now - 2 * DAY }),
+        mediaMsg('miss-c', 'image', { timestamp: now - 1 * DAY })
+    ];
+    const stats = plain(await W.WajsEngine.enrichMedia(msgs, netOpts(), null));
+    assert.deepEqual(calls.filter(c => c.action === 'wajs_media_download').map(c => c.params.id), ['miss-c', 'stale-sticker', 'miss-a']);
+    assert.equal(msgs[1].media.status, 'expired');
+    assert.equal(msgs[1].media.error, 'url_expired');
+    assert.equal(msgs[0].media.status, 'thumbnail', 'downloads continue after a skipped item');
+    assert.equal(stats.network.skipped, 1);
+    assert.equal(stats.network.downloaded, 2);
+    assert.equal(stats.network.stoppedBy, null);
+});
+
 test('network tier stops at the first expired item and clamps max age to 30 days', async () => {
     const { W, calls } = setup();
     const now = Date.now();
@@ -292,15 +311,42 @@ test('addons and people failures only drop the extras', async () => {
     assert.ok(res.messages.every(m => m.reactions === undefined));
 });
 
-test('abort skips the contact name lookup', async () => {
+const OTHER = '222@lid';
+const othersHistory = () => makeHistory().map(m => Object.assign({}, m, {
+    id: m.id.replace('true_', 'false_').replace(SELF, OTHER), fromMe: false, author: OTHER
+}));
+const namePeople = () => ({ unavailable: false, people: { [OTHER]: { name: 'Bea', pushname: null, verifiedName: null, phone: null } } });
+
+test('abort still looks up contact names for the partial result', async () => {
     const controller = new AbortController();
     const { W, calls } = setup({
-        addons: () => { controller.abort(); return { reactions: {}, votes: {}, unavailable: [] }; }
+        history: othersHistory(),
+        addons: () => { controller.abort(); return { reactions: {}, votes: {}, unavailable: [] }; },
+        people: namePeople
     });
     const res = plain(await W.WajsEngine.run({ mode: 'all' }, controller.signal));
     assert.equal(res.stopReason, 'aborted');
     assert.equal(res.isPartial, true);
-    assert.ok(!calls.some(c => c.action === 'wajs_people'));
+    assert.equal(calls.filter(c => c.action === 'wajs_people').length, 1);
+    assert.ok(res.messages.length > 0 && res.messages.every(m => m.sender === 'Bea'));
+});
+
+test('mid-run failure partial carries contact names', async () => {
+    const { W } = setup({ history: othersHistory(), failFrom: 1, people: namePeople });
+    await assert.rejects(W.WajsEngine.run({ mode: 'all' }, null),
+        err => err.name === 'WajsMidRunError' && err.partial.length === 39 && err.partial.every(m => m.sender === 'Bea'));
+});
+
+test('date: old-dated call logs grouped mid-history do not stop the range early', async () => {
+    const history = makeHistory();
+    // WhatsApp lists call logs together, with their own much older timestamps.
+    for (let i = 90; i < 95; i++) history[i] = Object.assign({}, history[i], { type: 'call_log', t: 1700000000 + i });
+    const { W } = setup({ history });
+    const base = 1760000000 * 1000;
+    const res = plain(await W.WajsEngine.run({ mode: 'date', start: base + 20 * 60000, end: Infinity }, null));
+    assert.equal(res.stopReason, 'reached_start_date');
+    assert.equal(res.messages[0].timestamp, base + 20 * 60000);
+    assert.equal(res.messages.length, 80 - 3 - 5, '20..99 minus pinned at 25/50/75 and the call logs');
 });
 
 test('older history: needsOlder only when the cache ends before the scope and the phone has more', async () => {

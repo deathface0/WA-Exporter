@@ -32,6 +32,15 @@
         'album'
     ]);
 
+    // A view-once message this device cannot open arrives as ciphertext; WhatsApp still shows
+    // it in the chat (and the DOM engine exports it as [View Once Message]).
+    const VIEW_ONCE_PLACEHOLDER = 'view_once_unavailable_fanout';
+
+    function isExcluded(raw) {
+        if (raw.type === 'ciphertext' && raw.subtype === VIEW_ONCE_PLACEHOLDER) return false;
+        return EXCLUDED_TYPES.has(raw.type);
+    }
+
     // WhatsApp groups reactions by emoji regardless of skin tone.
     const SKIN_TONES = /[\u{1F3FB}-\u{1F3FF}]/gu;
 
@@ -39,7 +48,7 @@
     const THUMBNAIL_KINDS = new Set(['image', 'video', 'gif']);
 
     function kindOf(raw) {
-        if (raw.isViewOnce) return 'view_once';
+        if (raw.isViewOnce || (raw.type === 'ciphertext' && raw.subtype === VIEW_ONCE_PLACEHOLDER)) return 'view_once';
         if (raw.type === 'video' && raw.isGif) return 'gif';
         if (raw.type === 'poll_creation') return 'poll';
         if (raw.type === 'multi_vcard') return 'vcard';
@@ -121,13 +130,14 @@
 
     function contentFor(kind, raw, ctx) {
         const label = LABELS[kind];
+        const caption = resolveMentions(raw.caption, raw.mentionedJidList, ctx);
         switch (kind) {
             case 'chat':
-                return raw.body || '';
+                return resolveMentions(raw.body, raw.mentionedJidList, ctx) || '';
             case 'image':
             case 'video':
             case 'gif':
-                return raw.caption ? `${label} ${raw.caption}` : label;
+                return caption ? `${label} ${caption}` : label;
             case 'audio':
             case 'ptt':
             case 'sticker':
@@ -136,7 +146,7 @@
                 return label;
             case 'document': {
                 const name = raw.filename || 'document';
-                return raw.caption && raw.caption !== name ? `${label} ${name} - ${raw.caption}` : `${label} ${name}`;
+                return raw.caption && raw.caption !== name ? `${label} ${name} - ${caption}` : `${label} ${name}`;
             }
             case 'location':
                 return `${label} ${mapsUrl(raw)}`;
@@ -158,19 +168,46 @@
         return `https://maps.google.com/?q=${raw.lat},${raw.lng}`;
     }
 
-    function quotedContent(q) {
+    function quotedContent(q, ctx) {
         if (!q) return '[Media]';
         const kind = q.type === 'poll_creation' ? 'poll' : (q.type || 'chat');
-        if (kind === 'chat') return q.body || '[Media]';
+        if (kind === 'chat') return resolveMentions(q.body, q.mentionedJidList, ctx) || '[Media]';
         const label = LABELS[kind] || '[Media]';
-        const text = q.caption || (kind === 'document' ? q.filename : null);
+        const text = resolveMentions(q.caption, q.mentionedJidList, ctx) || (kind === 'document' ? q.filename : null);
         return text ? `${label} ${text}` : label;
     }
 
     function mentionName(jid, ctx) {
+        if (!jid) return null;
         if (ctx.selfJids && ctx.selfJids.has(jid)) return 'Me';
         const p = person(jid, ctx);
         return (p && (p.name || p.pushname || p.verifiedName)) || null;
+    }
+
+    // WhatsApp stores a mention as "@<user part of the jid>" in the text and shows the name
+    // on screen. Quoted messages may lack mentionedJidList, so the token is also tried as
+    // @lid and @c.us. Unknown names keep the "@<user>" token.
+    const MENTION_TOKEN = /(?<![\w@])@(\d+)(?!\d)/g;
+
+    function mentionCandidates(text) {
+        if (typeof text !== 'string' || !text.includes('@')) return [];
+        const out = [];
+        for (const m of text.matchAll(MENTION_TOKEN)) out.push(`${m[1]}@lid`, `${m[1]}@c.us`);
+        return out;
+    }
+
+    function resolveMentions(text, jids, ctx) {
+        if (typeof text !== 'string' || !text.includes('@')) return text;
+        const byUser = new Map();
+        (jids || []).forEach(jid => {
+            const user = jidUser(jid);
+            if (user && !byUser.has(user)) byUser.set(user, jid);
+        });
+        return text.replace(MENTION_TOKEN, (token, user) => {
+            const name = mentionName(byUser.get(user), ctx) ||
+                mentionName(`${user}@lid`, ctx) || mentionName(`${user}@c.us`, ctx);
+            return name ? '@' + name : token;
+        });
     }
 
     function toInt(value) {
@@ -185,7 +222,7 @@
      */
     function mapMessage(raw, ctx) {
         if (!raw || !raw.id || typeof raw.t !== 'number') return null;
-        if (EXCLUDED_TYPES.has(raw.type)) return null;
+        if (isExcluded(raw)) return null;
 
         const kind = kindOf(raw);
         const senderId = raw.fromMe
@@ -205,7 +242,7 @@
         if (raw.quotedMsg) {
             quotedMessage = {
                 sender: displayName(raw.quotedParticipant, null, ctx),
-                content: quotedContent(raw.quotedMsg),
+                content: quotedContent(raw.quotedMsg, ctx),
                 id: raw.quotedStanzaID || null
             };
         }
@@ -316,5 +353,5 @@
         return out;
     }
 
-    root.WAExporter.WajsMapper = { mapMessage, messageKey, mergeWithDom, kindOf, EXCLUDED_TYPES };
+    root.WAExporter.WajsMapper = { mapMessage, messageKey, mergeWithDom, kindOf, mentionCandidates, isExcluded, EXCLUDED_TYPES };
 })();

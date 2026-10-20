@@ -39,7 +39,7 @@ const ALLOWED = new Set([
 // Network calls that are allowlisted despite matching DENY: each is the same call
 // WhatsApp's own UI makes for a user action, gated by an explicit request flag.
 const USER_EQUIVALENT = new Set([
-    'core.media.download' // WAWebMediaStage.react "Download" button (phase 3b)
+    'core.media.download' // WhatsApp's auto-download call (WAWebMediaAutoDownloadQueue): no re-upload requests
 ]);
 
 const DENY = /\b(send\w*|mark\w*|star\w*|pin\w*|archive|unarchive|delete\w*|edit\w*|forward\w*|react\w*|subscribePresence|block\w*|clear|mute|unmute|download\w*|join\w*|leave|set\w*|queryExists|openChat\w*|keepMessage|requestPhoneNumber|rehydrateMessage)\b/;

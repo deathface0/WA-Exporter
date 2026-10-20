@@ -83,6 +83,16 @@ test('media body that is not a JPEG is never used as text or thumbnail', () => {
     assert.equal(img.thumbnail, null);
 });
 
+test('view-once placeholders WhatsApp shows (ciphertext) are exported, other ciphertext is not', () => {
+    const placeholder = raw({ type: 'ciphertext', subtype: 'view_once_unavailable_fanout' });
+    assert.equal(WajsMapper.isExcluded(placeholder), false);
+    const m = WajsMapper.mapMessage(placeholder, ctxGroup());
+    assert.equal(m.type, 'view_once');
+    assert.equal(m.content, '[View Once Message]');
+    assert.equal(WajsMapper.mapMessage(raw({ type: 'ciphertext' }), ctxGroup()), null);
+    assert.equal(WajsMapper.isExcluded(raw({ type: 'call_log' })), true);
+});
+
 test('location, contact, poll, revoked and view once', () => {
     const loc = WajsMapper.mapMessage(raw({ type: 'location', lat: 1.5, lng: -2.5 }), ctxGroup());
     assert.equal(loc.content, '[Location] https://maps.google.com/?q=1.5,-2.5');
@@ -215,4 +225,36 @@ test('messageKey matches WA-JS/IndexedDB ids with bare DOM data-ids', () => {
     assert.equal(WajsMapper.messageKey('false_34600000000@c.us_3EB0ABCDEF'), '3EB0ABCDEF');
     assert.equal(WajsMapper.messageKey('3EB0ABCDEF'), '3EB0ABCDEF');
     assert.equal(WajsMapper.messageKey(null), null);
+});
+
+test('mentions in text, captions and quotes show the name instead of the id', () => {
+    const ctx = ctxWithPeople();
+    const text = WajsMapper.mapMessage(raw({ body: 'hi @222222222222222 and @111111111111111', mentionedJidList: [OTHER, SELF] }), ctx);
+    assert.equal(text.content, 'hi @Ana Contact and @Me');
+
+    const img = WajsMapper.mapMessage(raw({ type: 'image', caption: 'look @333333333333333', mentionedJidList: [THIRD] }), ctx);
+    assert.equal(img.content, '[Image] look @Third');
+
+    // Quoted messages without mentionedJidList: the token is resolved as @lid/@c.us.
+    const reply = WajsMapper.mapMessage(raw({
+        body: 'ok', quotedMsg: { type: 'chat', body: '@222222222222222 you said' }, quotedParticipant: THIRD
+    }), ctx);
+    assert.equal(reply.quotedMessage.content, '@Ana Contact you said');
+    assert.match(reply.rawFormat, /\[Replying to Third: "@Ana Contact you said"\] ok$/);
+});
+
+test('mentions: unknown names, longer numbers and emails keep the original text', () => {
+    const ctx = ctxWithPeople();
+    const unknown = WajsMapper.mapMessage(raw({ body: 'hey @444', mentionedJidList: ['444@lid'] }), ctx);
+    assert.equal(unknown.content, 'hey @444');
+    const longer = WajsMapper.mapMessage(raw({ body: '@2222222222222229 x', mentionedJidList: [OTHER] }), ctx);
+    assert.equal(longer.content, '@2222222222222229 x');
+    const email = WajsMapper.mapMessage(raw({ body: 'mail a@222222222222222', mentionedJidList: [] }), ctx);
+    assert.equal(email.content, 'mail a@222222222222222');
+});
+
+test('mentionCandidates lists @lid and @c.us for each token', () => {
+    assert.deepEqual(plain(WajsMapper.mentionCandidates('a @123 b @45')), ['123@lid', '123@c.us', '45@lid', '45@c.us']);
+    assert.deepEqual(plain(WajsMapper.mentionCandidates(null)), []);
+    assert.deepEqual(plain(WajsMapper.mentionCandidates('x@123')), []);
 });

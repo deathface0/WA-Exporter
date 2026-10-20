@@ -32,6 +32,7 @@
     const NETWORK_TYPES = ['image', 'sticker', 'ptt', 'audio'];
     const NETWORK_DEFAULTS = { maxAgeDays: 14, maxDownloads: 30 };
     const NETWORK_MAX_AGE_LIMIT = 30;
+    const NETWORK_MAX_DOWNLOADS_LIMIT = 30;
 
     // WhatsApp launched in 2009; anything older is a broken timestamp and must not
     // drive the date-range stop.
@@ -176,7 +177,7 @@
         // Attaches reactionRows/voteRows to the page's raws. Failures only cost the extras.
         async function fetchAddons(page) {
             const listed = page.filter(raw => raw && raw.id && raws.has(raw.id) && raws.get(raw.id).raw === raw &&
-                !Mapper.EXCLUDED_TYPES.has(raw.type));
+                !Mapper.isExcluded(raw));
             // hasReaction can be null on database rows: only a definite false skips the lookup.
             const reactionIds = listed.filter(raw => raw.hasReaction !== false).map(raw => raw.id);
             const pollIds = listed.filter(raw => raw.type === 'poll_creation').map(raw => raw.id);
@@ -200,8 +201,9 @@
             }
         }
 
-        // Display names for every person referenced by the collected messages.
-        async function fetchPeople() {
+        // Display names for every person referenced by the collected messages. It is a local
+        // read, so cancelled and mid-run partial results get it too (with sig = null).
+        async function fetchPeople(sig) {
             const jids = new Set();
             const add = jid => { if (typeof jid === 'string' && PERSON_JID.test(jid)) jids.add(jid); };
             raws.forEach(({ raw }) => {
@@ -209,17 +211,22 @@
                 add(raw.from);
                 add(raw.quotedParticipant);
                 (raw.mentionedJidList || []).forEach(add);
+                const q = raw.quotedMsg;
+                if (q) {
+                    (q.mentionedJidList || []).forEach(add);
+                    Mapper.mentionCandidates(q.body).concat(Mapper.mentionCandidates(q.caption)).forEach(add);
+                }
                 (raw.reactionRows || []).forEach(r => add(r.sender));
                 (raw.voteRows || []).forEach(v => add(v.sender));
             });
             const all = Array.from(jids);
             for (let i = 0; i < all.length; i += MAX_PEOPLE_PER_CALL) {
-                if (i > 0) await abortableSleep(randomBetween(ADDON_PACING.minMs, ADDON_PACING.maxMs), signal);
+                if (i > 0) await abortableSleep(randomBetween(ADDON_PACING.minMs, ADDON_PACING.maxMs), sig);
                 let res;
                 try {
                     res = await Wajs.call('wajs_people', { jids: all.slice(i, i + MAX_PEOPLE_PER_CALL) });
                 } catch (e) {
-                    if (signal && signal.aborted) throw new Error('Aborted');
+                    if (sig && sig.aborted) throw new Error('Aborted');
                     console.warn('[WA-Exporter WA-JS] Contact name lookup failed:', e.message);
                     return;
                 }
@@ -231,7 +238,7 @@
         function exportableCount() {
             let n = 0;
             raws.forEach(e => {
-                if (Mapper.EXCLUDED_TYPES.has(e.raw.type)) return;
+                if (Mapper.isExcluded(e.raw)) return;
                 if (mode === 'date' && (e.raw.t * 1000 < startDate || e.raw.t * 1000 > endDate)) return;
                 n++;
             });
@@ -260,7 +267,10 @@
                     }
                     errors++;
                     console.warn(`[WA-Exporter WA-JS] Page request failed (${errors}/${PACING.maxConsecutiveErrors}):`, e.message);
-                    if (errors >= PACING.maxConsecutiveErrors) throw new WajsMidRunError(e.message, collect());
+                    if (errors >= PACING.maxConsecutiveErrors) {
+                        await fetchPeople(null);
+                        throw new WajsMidRunError(e.message, collect());
+                    }
                     continue;
                 }
                 pages++;
@@ -279,7 +289,9 @@
                     if (!raw || !raw.id || raws.has(raw.id)) return;
                     raws.set(raw.id, { raw, seq: base + i });
                     if (raw.fromMe && raw.author) ctx.selfJids.add(raw.author);
-                    if (typeof raw.t === 'number' && raw.t >= MIN_PLAUSIBLE_T && raw.t < oldestT) oldestT = raw.t;
+                    // Only exported entries count: call logs come grouped in the middle of the
+                    // history with their own (much older) dates.
+                    if (!Mapper.isExcluded(raw) && typeof raw.t === 'number' && raw.t >= MIN_PLAUSIBLE_T && raw.t < oldestT) oldestT = raw.t;
                     fresh++;
                 });
                 const first = page.find(raw => raw && raw.id);
@@ -310,13 +322,11 @@
             }
         }
 
-        if (stopReason !== 'aborted') {
-            try {
-                await fetchPeople();
-            } catch (e) {
-                if (e.message !== 'Aborted') throw e;
-                stopReason = 'aborted';
-            }
+        try {
+            await fetchPeople(stopReason === 'aborted' ? null : signal);
+        } catch (e) {
+            if (e.message !== 'Aborted') throw e;
+            stopReason = 'aborted';
         }
 
         const messages = collect();
@@ -413,9 +423,10 @@
     async function downloadMissing(work, opts, signal, onProgress) {
         const Wajs = window.WAExporter.Wajs;
         const maxAgeDays = Math.min(Math.max(1, parseInt(opts.network.maxAgeDays, 10) || NETWORK_DEFAULTS.maxAgeDays), NETWORK_MAX_AGE_LIMIT);
-        const maxDownloads = Math.max(0, parseInt(opts.network.maxDownloads, 10) || NETWORK_DEFAULTS.maxDownloads);
+        const maxDownloads = Math.min(Math.max(0, parseInt(opts.network.maxDownloads, 10) || NETWORK_DEFAULTS.maxDownloads), NETWORK_MAX_DOWNLOADS_LIMIT);
         const minTimestamp = Date.now() - maxAgeDays * 86400000;
-        const net = { attempted: 0, downloaded: 0, expired: 0, errors: 0, tooOld: 0, overLimit: 0, stoppedBy: null };
+        const net = { attempted: 0, downloaded: 0, expired: 0, errors: 0, tooOld: 0, overLimit: 0, skipped: 0, stoppedBy: null };
+        let requested = false;
 
         const missing = work.filter(m => m.media.status === 'not_downloaded' && NETWORK_TYPES.includes(m.type) &&
             (AUDIO_TYPES.includes(m.type) ? opts.audio : opts.thumbnails));
@@ -426,7 +437,7 @@
 
         for (let i = queue.length - 1; i >= 0; i--) {
             if (signal && signal.aborted) throw new Error('Aborted');
-            if (net.attempted > 0) await abortableSleep(randomBetween(NETWORK_PACING.minMs, NETWORK_PACING.maxMs), signal);
+            if (requested) await abortableSleep(randomBetween(NETWORK_PACING.minMs, NETWORK_PACING.maxMs), signal);
             const m = queue[i];
             const isAudio = AUDIO_TYPES.includes(m.type);
             net.attempted++;
@@ -440,6 +451,17 @@
             } catch (e) {
                 if (signal && signal.aborted) throw new Error('Aborted');
                 res = { status: 'error', reason: e.message };
+            }
+            requested = !res.skipped;
+            if (res.skipped) {
+                // Checked before any request: the CDN URL has expired (or a sticker has no
+                // known expiry; stickers reuse the original upload's URL).
+                net.skipped++;
+                if (res.status === 'expired') {
+                    m.media.status = 'expired';
+                    m.media.error = res.reason;
+                }
+                continue;
             }
             if (res.dataUri) {
                 if (isAudio) m.audioData = res.dataUri;
@@ -456,7 +478,7 @@
                 break;
             }
         }
-        console.log(`[WA-Exporter WA-JS] Network media: ${net.downloaded} downloaded, ${net.expired} expired, ${net.errors} errors, ${net.tooOld} too old, ${net.overLimit} over limit${net.stoppedBy ? ', stopped by ' + net.stoppedBy : ''}.`);
+        console.log(`[WA-Exporter WA-JS] Network media: ${net.downloaded} downloaded, ${net.expired} expired, ${net.errors} errors, ${net.skipped} skipped before requesting, ${net.tooOld} too old, ${net.overLimit} over limit${net.stoppedBy ? ', stopped by ' + net.stoppedBy : ''}.`);
         return net;
     }
 
