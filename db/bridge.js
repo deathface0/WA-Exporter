@@ -43,6 +43,12 @@
         return pageScriptReady;
     }
 
+    // Firefox hands page messages to content scripts behind an XrayWrapper, which rejects our
+    // objects as properties. Results are plain data, so a JSON copy makes them ours.
+    function toLocal(value) {
+        return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+    }
+
     async function queryDB(action, params = {}, timeoutMs = null) {
         await ensurePageScript();
 
@@ -60,7 +66,7 @@
                 if (event.data.error) {
                     reject(new Error(event.data.error));
                 } else {
-                    resolve(event.data.result);
+                    resolve(toLocal(event.data.result));
                 }
             };
 

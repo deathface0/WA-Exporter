@@ -36,6 +36,12 @@
         await browser.runtime.sendMessage({ type: 'wajs_mark_incompatible', waVersion, reason });
     }
 
+    // Firefox hands page messages to content scripts behind an XrayWrapper, which rejects our
+    // objects as properties. Results are plain data, so a JSON copy makes them ours.
+    function toLocal(value) {
+        return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+    }
+
     function call(action, params = {}, timeoutMs = null) {
         return new Promise((resolve, reject) => {
             if (!ALLOWED_ACTIONS.includes(action)) return reject(new Error('Invalid action: ' + action));
@@ -48,7 +54,7 @@
                 window.removeEventListener('message', handler);
                 clearTimeout(timerId);
                 if (event.data.error) reject(new Error(event.data.error));
-                else resolve(event.data.result);
+                else resolve(toLocal(event.data.result));
             };
 
             window.addEventListener('message', handler);
