@@ -59,8 +59,8 @@
             if (known) return { ok: false, error: 'known_incompatible: ' + known.reason, knownIncompatible: true };
         }
 
-        await browser.scripting.executeScript({ target, world: 'MAIN', files: [`vendor/wa-js/${version}/wa-js.bundle.js`] });
-        await browser.scripting.executeScript({ target, world: 'MAIN', files: ['wajs/host.js'] });
+        await browser.scripting.executeScript({ target, world: 'MAIN', files: [`/vendor/wa-js/${version}/wa-js.bundle.js`] });
+        await browser.scripting.executeScript({ target, world: 'MAIN', files: ['/wajs/host.js'] });
         return { ok: true, alreadyInjected: false, version };
     }
 

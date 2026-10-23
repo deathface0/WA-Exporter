@@ -12,25 +12,28 @@
     const WHATSAPP_URL = 'web.whatsapp.com';
 
     const REQUIRED_SCRIPTS = [
-        'ai/gemini.js',
-        'db/bridge.js',
-        'extraction/selectors.js',
-        'extraction/parsers.js',
-        'extraction/scroller.js',
-        'export/formatters.js',
-        'extraction/wajs-client.js',
-        'extraction/wajs-mapper.js',
-        'extraction/wajs-engine.js',
-        'extraction/main.js'
+        '/ai/gemini.js',
+        '/db/bridge.js',
+        '/extraction/selectors.js',
+        '/extraction/parsers.js',
+        '/extraction/scroller.js',
+        '/export/formatters.js',
+        '/extraction/wajs-client.js',
+        '/extraction/wajs-mapper.js',
+        '/extraction/wajs-engine.js',
+        '/extraction/main.js'
     ];
 
     // Content scripts only (isolated world). db/page-script.js reaches the MAIN world on demand,
-    // when the DOM engine first needs it (db/bridge.js).
+    // when the DOM engine first needs it (db/bridge.js). Paths start with '/': Firefox resolves
+    // relative ones against the popup page (popup/…), Chrome against the extension root.
     async function ensureInjected(tabId) {
         for (const file of REQUIRED_SCRIPTS) {
             try {
                 await browser.scripting.executeScript({ target: { tabId }, files: [file] });
-            } catch (err) { }
+            } catch (err) {
+                console.warn('[WA-Exporter Popup] Could not inject', file, err);
+            }
         }
     }
 
